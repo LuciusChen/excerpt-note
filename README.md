@@ -2,36 +2,34 @@
 
 A lightweight Emacs package for seamless PDF and EPUB annotation with Org-mode.
 
-**Version:** 2.9.0
+**Version:** 3.0.0
 
 ## Philosophy
 
 Academic reading often involves complex annotations: multi-paragraph notes, inline images, LaTeX equations, code blocks, and lengthy excerpts. Traditional annotation tools force you to think about structure—where does the note end? How do I separate my thoughts from the source material?
 
-**excerpt-note** eliminates this friction. Each annotation unit has a clear, consistent structure:
+**excerpt-note** eliminates this friction with a clean, compact format:
 
 ```
-[Your notes - write freely here]
+● P42 The extracted text from the source document appears here.
+[Your notes below - write freely]
 
-@p.42 | document.pdf | (42 . 0.35)
-[Extracted text from source]
------
+● P43 Another excerpt continues...
 ```
 
-The `-----` separator cleanly delimits each unit. Write as much as you want above the marker line—multiple paragraphs, images, equations, whatever your thinking requires. The excerpt lives below the marker, preserving the original text. No need to manage boundaries manually; the structure handles it for you.
+Each excerpt starts with a page marker (`● P42`) followed by the source text. Your notes go below. Simple, readable, and non-intrusive.
 
 ## Features
 
+- **Compact visual format**: Clean `● Pxx` markers with styled content
 - **Bidirectional navigation**: Jump between PDF/EPUB and notes seamlessly
 - **Precise location anchors**: Return to exact scroll positions, not just pages
 - **Org-mode native**: Full support for images, LaTeX, tables, and all Org features
-- **Smart paragraph detection**: Uses PDF layout analysis (Y gaps, X indentation, line lengths) to intelligently detect paragraph boundaries
-- **Smart text extraction**: Automatically merges soft line breaks from PDFs while preserving paragraph structure
+- **Smart text extraction**: Handles mixed font sizes, Drop Caps, multi-column layouts, and hyphenated words
 - **Smart file resolution**: Works with relative paths, bibliography entries, and configurable search paths
 - **Denote & Citar integration**: Automatically links to existing literature notes
-- **Visual rendering**: Clean overlay system hides metadata, shows friendly "p.42 ➜" badges
+- **Visual rendering**: Overlay system with colored page markers and gray excerpt text
 - **JIT fontification**: Efficient rendering for large note files
-- **Protected metadata**: Modification hooks prevent accidental edits to excerpt markers
 
 ## Installation
 
@@ -46,8 +44,6 @@ Requires Emacs 27.1+, [pdf-tools](https://github.com/vedang/pdf-tools), and [nov
 ```
 
 To disable: `M-x excerpt-note-disable`
-
-This removes all hooks and disables the minor modes in all active buffers.
 
 ## Usage
 
@@ -74,7 +70,7 @@ This removes all hooks and disables the minor modes in all active buffers.
 1. Open a PDF or EPUB
 2. Select text and press `e` to excerpt
 3. Notes file opens in another window with cursor ready for your annotations
-4. Write your thoughts above the marker line
+4. Write your thoughts below the excerpt
 5. Press `C-c e j` on any excerpt to jump back to the source
 
 ## Configuration
@@ -95,6 +91,9 @@ This removes all hooks and disables the minor modes in all active buffers.
 
 ;; Auto-parse excerpts when opening files
 (setq excerpt-note-auto-parse t)
+
+;; Enable smart text extraction for PDFs (default: t)
+(setq excerpt-note-smart-text-extraction t)
 ```
 
 ### Denote & Citar Integration
@@ -108,29 +107,6 @@ This removes all hooks and disables the minor modes in all active buffers.
 (setq excerpt-note-use-citar t)
 ```
 
-### Smart Paragraph Detection
-
-```elisp
-;; Enable smart paragraph detection (default: t)
-;; Uses position information to detect paragraph boundaries
-(setq excerpt-note-smart-paragraph-detection t)
-
-;; Gap threshold: multiplier for average line gap to detect paragraph breaks
-;; A gap larger than (avg-gap * threshold) indicates a paragraph break
-(setq excerpt-note-paragraph-gap-threshold 1.5)
-
-;; Indent threshold: minimum X offset (relative coords 0-1) to detect first-line indent
-(setq excerpt-note-indent-threshold 0.02)
-
-;; Short line threshold: ratio below which a line is considered short
-;; May indicate paragraph end
-(setq excerpt-note-short-line-threshold 0.7)
-
-;; List item markers for detecting list items in PDF text
-(setq excerpt-note-list-markers
-      '("▶" "►" "•" "●" "○" "◆" "◇" "■" "□" "▪" "▫" "–" "—" "-" "\\*"))
-```
-
 ### Debug Mode
 
 ```elisp
@@ -140,25 +116,22 @@ This removes all hooks and disables the minor modes in all active buffers.
 
 ## Note File Structure
 
-Each excerpt unit follows this structure:
+Each excerpt uses a compact single-line format:
 
 ```org
+● P15 The extracted text from the source document appears here,
+preserving original formatting and handling line breaks intelligently.
+
 Your notes go here. Write as much as you need.
-
 Include images: [[./figures/diagram.png]]
-
 Or LaTeX: $E = mc^2$
 
-Multiple paragraphs are fine.
+● P16 Next excerpt starts with another marker...
 
-@p.15 | paper.pdf | (15 . 0.42)
-The extracted text from the source document
-appears here, preserving original formatting
-across multiple lines if needed.
------
-
-Next excerpt starts after the separator...
+More notes for this excerpt...
 ```
+
+The `● Pxx` marker is displayed with a larger, colored font. The excerpt content appears in gray to visually distinguish it from your notes.
 
 ## Commands Reference
 
@@ -174,18 +147,16 @@ Next excerpt starts after the separator...
 | `excerpt-note-find-this-location-in-notes` | Find notes for current page |
 | `excerpt-note-delete-at-point` | Delete the excerpt at point |
 | `excerpt-note-list-excerpts` | List all excerpts in current buffer |
-| `excerpt-note-fix-file-paths` | Fix broken file paths in notes |
-| `excerpt-note-update-source-file` | Update the SOURCE_FILE header |
 
 ### Debugging Commands
 
 | Command | Description |
 |---------|-------------|
 | `excerpt-note-debug` | Show all detected excerpts |
-| `excerpt-note-debug-at-point` | Debug excerpt detection at current position |
+| `excerpt-note-debug-at-point` | Debug excerpt detection |
 | `excerpt-note-check-conflicts` | Check for conflicting modes or settings |
 | `excerpt-note-force-refresh` | Force re-render all overlays with logging |
-| `excerpt-note-preview-smart-extraction` | Preview smart paragraph detection for PDF selection |
+| `excerpt-note-preview-extraction` | Preview text extraction for PDF selection |
 | `excerpt-note-show-selected-text` | Show the currently selected text in PDF |
 
 ## Architecture
@@ -194,6 +165,26 @@ The package uses two minor modes:
 
 - **`excerpt-note-mode`**: For Org buffers - handles overlays, JIT-lock fontification, and note keybindings
 - **`excerpt-note-doc-mode`**: For PDF/EPUB buffers - provides document interaction keybindings
+
+## Migrating from v2.x
+
+The v3.0 format is more compact:
+
+**Old format (v2.x):**
+```
+[notes above]
+@p.42 | document.pdf | (42 . 0.35)
+[excerpt text]
+-----
+```
+
+**New format (v3.0):**
+```
+● P42 [excerpt text on same line]
+[notes below]
+```
+
+Old format files are still partially supported for reading, but new excerpts use the compact format.
 
 ## License
 

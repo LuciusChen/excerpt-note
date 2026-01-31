@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026
 ;; Author: Your Name
-;; Version: 2.9.0
+;; Version: 3.0.0
 ;; Package-Requires: ((emacs "27.1") (pdf-tools "1.0") (nov "0.4.0"))
 ;; Keywords: pdf, epub, notes, annotations, denote, citar
 
@@ -12,7 +12,7 @@
 ;; Features:
 ;; - Seamless inline excerpts with precise anchors
 ;; - Preserves original text formatting from PDFs
-;; - Uses org-mode standard separators (-----)
+;; - Compact format: ● Pxx [content]
 ;; - Optimized single-overlay rendering system
 ;; - Robust file path resolution with intelligent search
 ;; - JIT-based incremental rendering with forced synchronization
@@ -87,35 +87,11 @@ Paths are tried in order until file is found."
   :type 'boolean
   :group 'excerpt-note)
 
-(defcustom excerpt-note-smart-paragraph-detection t
-  "Use smart paragraph detection based on PDF layout analysis.
-When non-nil, uses position information (Y gaps, X indentation,
-line lengths) to detect paragraph boundaries instead of simple
-regex-based normalization."
+(defcustom excerpt-note-smart-text-extraction t
+  "Use position-based text extraction for PDFs.
+When non-nil, uses character position information to properly
+merge text, handling Drop Caps and mixed font sizes correctly."
   :type 'boolean
-  :group 'excerpt-note)
-
-(defcustom excerpt-note-list-markers
-  '("▶" "►" "•" "●" "○" "◆" "◇" "■" "□" "▪" "▫" "–" "—" "-" "\\*")
-  "List item marker symbols for detecting list items in PDF text."
-  :type '(repeat string)
-  :group 'excerpt-note)
-
-(defcustom excerpt-note-paragraph-gap-threshold 1.5
-  "Multiplier for average line gap to detect paragraph breaks.
-A gap larger than (avg-gap * threshold) indicates a paragraph break."
-  :type 'number
-  :group 'excerpt-note)
-
-(defcustom excerpt-note-indent-threshold 0.02
-  "Minimum X offset (relative coords 0-1) to detect first-line indent."
-  :type 'number
-  :group 'excerpt-note)
-
-(defcustom excerpt-note-short-line-threshold 0.7
-  "Line length ratio below which a line is considered short.
-A line shorter than (avg-length * threshold) may indicate paragraph end."
-  :type 'number
   :group 'excerpt-note)
 
 ;;; Faces
@@ -126,8 +102,8 @@ A line shorter than (avg-length * threshold) may indicate paragraph end."
   :group 'excerpt-note)
 
 (defface excerpt-note-marker-face
-  '((t :foreground "#999999" :height 0.85 :weight bold))
-  "Face for page marker prefix like 'p.42 ➜'."
+  '((t :foreground "#e6a23c" :height 1.1 :weight bold))
+  "Face for page marker like '● P24'."
   :group 'excerpt-note)
 
 (defface excerpt-note-separator-face
@@ -406,25 +382,36 @@ Handles:
 
 ;;; PDF functions
 
+(defun excerpt-note--compute-bounding-box (edge-lists)
+  "Compute bounding box (LEFT TOP RIGHT BOTTOM) from multiple EDGE-LISTS.
+Each element of EDGE-LISTS should be (L T R B)."
+  (when edge-lists
+    (let ((min-left (apply #'min (mapcar (lambda (e) (nth 0 e)) edge-lists)))
+          (min-top (apply #'min (mapcar (lambda (e) (nth 1 e)) edge-lists)))
+          (max-right (apply #'max (mapcar (lambda (e) (nth 2 e)) edge-lists)))
+          (max-bottom (apply #'max (mapcar (lambda (e) (nth 3 e)) edge-lists))))
+      (list min-left min-top max-right max-bottom))))
+
 (defun excerpt-note--pdf-extract-edges (region)
   "Extract a single (LEFT TOP RIGHT BOTTOM) edge list from REGION.
 REGION is the return value of `pdf-view-active-region', which may be:
   - ((L T R B) ...)      — list of edge lists (standard)
   - (L T R B)            — flat edge list
   - (PAGE (L T R B) ...) — page number followed by edge lists
-  - other                — unexpected format, return nil."
+  - other                — unexpected format, return nil.
+When multiple edge lists exist, compute the bounding box of all."
   (cond
-   ;; (PAGE (L T R B) ...) — first element is page number, second is edges
+   ;; (PAGE (L T R B) ...) — first element is page number, rest are edges
    ((and (consp region)
          (numberp (car region))
          (consp (cadr region))
          (numberp (caadr region)))
-    (cadr region))
-   ;; ((L T R B) ...) — first element is a list of numbers
+    (excerpt-note--compute-bounding-box (cdr region)))
+   ;; ((L T R B) ...) — list of edge lists, compute bounding box
    ((and (consp region)
          (consp (car region))
          (numberp (caar region)))
-    (car region))
+    (excerpt-note--compute-bounding-box region))
    ;; (L T R B) — flat list of numbers, at least 4 elements
    ((and (consp region)
          (numberp (car region))
@@ -541,112 +528,259 @@ Optional ANCHOR-TEXT is used for secondary verification in EPUB."
     (excerpt-note--epub-goto-location file location anchor-text))
    (t (error "Unknown type: %s" type))))
 
-;;; Text extraction - Smart paragraph detection
-
-;;; Line data structure accessors
-;; A line is a plist: (:text STRING :x FLOAT :y FLOAT :width FLOAT :height FLOAT)
+;;; Text extraction
 
 (defun excerpt-note--line-text (line)
-  "Get text content of LINE."
+  "Get text content of LINE plist."
   (plist-get line :text))
-
-(defun excerpt-note--line-start-x (line)
-  "Get starting X coordinate of LINE."
-  (plist-get line :x))
-
-(defun excerpt-note--line-y (line)
-  "Get Y coordinate (top) of LINE."
-  (plist-get line :y))
-
-(defun excerpt-note--line-width (line)
-  "Get width of LINE."
-  (plist-get line :width))
-
-(defun excerpt-note--line-height (line)
-  "Get height of LINE."
-  (plist-get line :height))
-
-(defun excerpt-note--lines-gap (line1 line2)
-  "Calculate vertical gap between LINE1 and LINE2."
-  (let ((line1-bottom (+ (excerpt-note--line-y line1)
-                         (excerpt-note--line-height line1)))
-        (line2-top (excerpt-note--line-y line2)))
-    (- line2-top line1-bottom)))
 
 ;;; PDF character layout to lines conversion
 
 (defun excerpt-note--chars-to-line (chars)
   "Convert a list of CHARS to a line structure.
-CHARS is a list of (CHAR (LEFT TOP RIGHT BOTTOM))."
+CHARS is a list of (CHAR (LEFT TOP RIGHT BOTTOM)).
+Inserts spaces when there are gaps between characters.
+Handles Drop Caps by not inserting space before following lowercase."
   (when chars
-    (let* ((text (apply #'string (mapcar #'car chars)))
-           ;; cadr because format is (CHAR (L T R B)), not (CHAR . (L T R B))
-           (edges (mapcar #'cadr chars))
-           (lefts (mapcar (lambda (e) (nth 0 e)) edges))
-           (tops (mapcar (lambda (e) (nth 1 e)) edges))
-           (rights (mapcar (lambda (e) (nth 2 e)) edges))
-           (bottoms (mapcar (lambda (e) (nth 3 e)) edges))
-           (min-left (apply #'min lefts))
-           (min-top (apply #'min tops))
-           (max-right (apply #'max rights))
-           (max-bottom (apply #'max bottoms)))
-      (list :text text
-            :x min-left
-            :y min-top
-            :width (- max-right min-left)
-            :height (- max-bottom min-top)))))
+    ;; Build text with gap detection
+    (let* ((text-parts '())
+           (last-right nil)
+           (last-char nil)
+           (last-height nil)
+           (char-index 0)
+           ;; Estimate average char width for gap detection
+           (widths (mapcar (lambda (c)
+                            (let ((e (cadr c)))
+                              (- (nth 2 e) (nth 0 e))))
+                          chars))
+           ;; Use median height to avoid Drop Cap skewing the average
+           (heights (sort (mapcar (lambda (c)
+                                   (let ((e (cadr c)))
+                                     (- (nth 3 e) (nth 1 e))))
+                                 chars)
+                         #'<))
+           (avg-width (/ (apply #'+ widths) (float (length widths))))
+           (median-height (nth (/ (length heights) 2) heights))
+           ;; Gap threshold: 1.5x average char width
+           (gap-threshold (* avg-width 1.5))
+           ;; Drop cap threshold: 1.3x median height (lower threshold)
+           (drop-cap-height-threshold (* median-height 1.3)))
 
-(defun excerpt-note--group-chars-into-lines (chars &optional threshold)
-  "Group CHARS into lines based on Y coordinate.
+      (dolist (char-info chars)
+        (let* ((char (car char-info))
+               (edges (cadr char-info))
+               (left (nth 0 edges))
+               (right (nth 2 edges))
+               (height (- (nth 3 edges) (nth 1 edges)))
+               ;; Check if this is Drop Cap continuation:
+               ;; - At position 1 (second char)
+               ;; - Last char was oversized uppercase
+               ;; - Current char is lowercase
+               (is-drop-cap-continuation
+                (and (= char-index 1)  ; Second character in line
+                     last-char last-height
+                     (> last-height drop-cap-height-threshold)
+                     (and (>= last-char ?A) (<= last-char ?Z))
+                     (and (>= char ?a) (<= char ?z)))))
+          ;; Check for gap (insert space if needed)
+          ;; But NOT for Drop Cap followed by lowercase
+          (when (and last-right
+                     (> (- left last-right) gap-threshold)
+                     (not is-drop-cap-continuation))
+            (push ?\s text-parts))
+          (push char text-parts)
+          (setq last-right right)
+          (setq last-char char)
+          (setq last-height height)
+          (setq char-index (1+ char-index))))
+
+      (let* ((text (apply #'string (nreverse text-parts)))
+             (edges (mapcar #'cadr chars))
+             (lefts (mapcar (lambda (e) (nth 0 e)) edges))
+             (tops (mapcar (lambda (e) (nth 1 e)) edges))
+             (rights (mapcar (lambda (e) (nth 2 e)) edges))
+             (bottoms (mapcar (lambda (e) (nth 3 e)) edges))
+             (min-left (apply #'min lefts))
+             (min-top (apply #'min tops))
+             (max-right (apply #'max rights))
+             (max-bottom (apply #'max bottoms)))
+        (list :text text
+              :x min-left
+              :y min-top
+              :width (- max-right min-left)
+              :height (- max-bottom min-top))))))
+
+(defun excerpt-note--group-chars-into-lines (chars &optional _threshold)
+  "Group CHARS into lines by clustering Y-center values.
 CHARS is output from `pdf-info-charlayout'.
-THRESHOLD is the Y tolerance for same-line detection (default 0.008)."
-  (let ((threshold (or threshold 0.008))
-        (lines '())
-        (current-line '())
-        (last-top nil))
-    (dolist (char-info chars)
-      ;; Format is (CHAR (L T R B)), use cadr to get edges
-      (let* ((edges (cadr char-info))
-             (top (nth 1 edges)))
-        ;; New line if Y coordinate changes significantly
-        (when (and last-top (> (abs (- top last-top)) threshold))
-          (when current-line
-            (push (nreverse current-line) lines))
-          (setq current-line nil))
-        (push char-info current-line)
-        (setq last-top top)))
-    ;; Don't forget the last line
-    (when current-line
-      (push (nreverse current-line) lines))
-    (nreverse lines)))
+Uses Y-center clustering to handle mixed font sizes on same visual line.
+Handles Drop Caps by using Y-top for oversized characters."
+  (when chars
+    ;; First pass: collect Y-center and height info
+    (let* ((char-data
+            (mapcar (lambda (char-info)
+                      (let* ((edges (cadr char-info))
+                             (y-top (nth 1 edges))
+                             (y-bottom (nth 3 edges))
+                             (height (- y-bottom y-top))
+                             (y-center (/ (+ y-top y-bottom) 2.0)))
+                        (list char-info y-center height y-top)))
+                    chars))
+           ;; Estimate typical line height (median of char heights)
+           (heights (sort (mapcar #'cl-third char-data) #'<))
+           (median-height (nth (/ (length heights) 2) heights))
+           ;; Drop cap threshold: 1.5x median height
+           (drop-cap-threshold (* median-height 1.5))
+           ;; Bucket tolerance: half of median height
+           (bucket-tolerance (/ median-height 2.0))
+           ;; Group into buckets by Y-center
+           (buckets (make-hash-table :test 'equal)))
+
+      ;; Assign each char to a bucket based on Y-center
+      ;; For Drop Caps (oversized chars), use Y-top instead of Y-center
+      (dolist (item char-data)
+        (let* ((char-info (car item))
+               (y-center (cadr item))
+               (height (cl-third item))
+               (y-top (cl-fourth item))
+               ;; Use Y-top for drop caps, Y-center for normal chars
+               (y-for-bucket (if (> height drop-cap-threshold)
+                                 y-top
+                               y-center))
+               ;; Round to bucket
+               (bucket-key (round (/ y-for-bucket bucket-tolerance))))
+          (puthash bucket-key
+                   (cons char-info (gethash bucket-key buckets))
+                   buckets)))
+
+      ;; Convert buckets to sorted lines
+      (let ((bucket-keys (sort (hash-table-keys buckets) #'<))
+            (raw-lines '()))
+        (dolist (key bucket-keys)
+          (let ((bucket-chars (gethash key buckets)))
+            ;; Sort chars in bucket by X coordinate
+            (push (sort bucket-chars
+                        (lambda (a b)
+                          (< (nth 0 (cadr a)) (nth 0 (cadr b)))))
+                  raw-lines)))
+        (setq raw-lines (nreverse raw-lines))
+
+        ;; Filter out empty lines
+        (seq-filter
+         (lambda (line-chars)
+           (let* ((text (apply #'string (mapcar #'car line-chars)))
+                  (trimmed (string-trim text)))
+             (not (string-empty-p trimmed))))
+         raw-lines)))))
+
+(defun excerpt-note--filter-line-by-x-contiguous (line-chars x-min x-max)
+  "Filter LINE-CHARS to keep only characters contiguous with X selection.
+Start with characters in X range (X-MIN to X-MAX), then expand
+left and right to include adjacent characters without large gaps.
+This handles multi-column (stops at column gap) and single-column
+(expands to full line) correctly."
+  (when line-chars
+    ;; Sort by X position
+    (let* ((sorted-chars (sort (copy-sequence line-chars)
+                               (lambda (a b)
+                                 (< (nth 0 (cadr a)) (nth 0 (cadr b))))))
+           ;; Find characters in X selection range (seeds)
+           (in-selection
+            (seq-filter
+             (lambda (c)
+               (let ((left (nth 0 (cadr c)))
+                     (right (nth 2 (cadr c))))
+                 (and (< left x-max) (> right x-min))))
+             sorted-chars)))
+      (if (null in-selection)
+          nil  ; No chars in selection, return empty
+        ;; Calculate gap threshold based on average char width
+        (let* ((widths (mapcar (lambda (c)
+                                 (- (nth 2 (cadr c)) (nth 0 (cadr c))))
+                               sorted-chars))
+               (avg-width (/ (apply #'+ widths) (float (length widths))))
+               (gap-threshold (* avg-width 3.0))  ; 3x char width = column break
+               ;; Find leftmost and rightmost of selected chars
+               (sel-indices
+                (mapcar (lambda (c) (seq-position sorted-chars c #'eq)) in-selection))
+               (min-idx (apply #'min sel-indices))
+               (max-idx (apply #'max sel-indices))
+               (result-start min-idx)
+               (result-end max-idx))
+          ;; Expand left
+          (let ((i (1- min-idx)))
+            (while (>= i 0)
+              (let* ((curr (nth i sorted-chars))
+                     (next (nth (1+ i) sorted-chars))
+                     (curr-right (nth 2 (cadr curr)))
+                     (next-left (nth 0 (cadr next)))
+                     (gap (- next-left curr-right)))
+                (if (< gap gap-threshold)
+                    (progn
+                      (setq result-start i)
+                      (setq i (1- i)))
+                  (setq i -1)))))  ; Stop expanding
+          ;; Expand right
+          (let ((i (1+ max-idx))
+                (len (length sorted-chars)))
+            (while (< i len)
+              (let* ((prev (nth (1- i) sorted-chars))
+                     (curr (nth i sorted-chars))
+                     (prev-right (nth 2 (cadr prev)))
+                     (curr-left (nth 0 (cadr curr)))
+                     (gap (- curr-left prev-right)))
+                (if (< gap gap-threshold)
+                    (progn
+                      (setq result-end i)
+                      (setq i (1+ i)))
+                  (setq i len)))))  ; Stop expanding
+          ;; Return the contiguous range
+          (seq-subseq sorted-chars result-start (1+ result-end)))))))
 
 (defun excerpt-note--get-pdf-lines-in-region (page edges)
   "Get lines with position info from PAGE within EDGES.
 EDGES is (LEFT TOP RIGHT BOTTOM) in relative coordinates.
 Returns a list of line plists.
 
-Note: We fetch ALL characters on the page, then filter by Y range.
-This ensures we get complete lines, not truncated by edge boundaries."
+Strategy:
+1. Filter by Y range to get all characters on lines within selection
+2. Group into lines by Y-center
+3. For each line with chars in X range, keep only contiguous chars
+   (handles multi-column by stopping at column gaps)"
   (when (and (fboundp 'pdf-info-charlayout) edges)
-    (let* ((edge-top (nth 1 edges))
+    (let* ((edge-left (nth 0 edges))
+           (edge-top (nth 1 edges))
+           (edge-right (nth 2 edges))
            (edge-bottom (nth 3 edges))
-           (y-margin 0.005)  ; Small margin to catch edge cases
+           (y-margin 0.005)
+           (x-margin 0.01)
+           (x-min (- (min edge-left edge-right) x-margin))
+           (x-max (+ (max edge-left edge-right) x-margin))
            (y-min (- (min edge-top edge-bottom) y-margin))
            (y-max (+ (max edge-top edge-bottom) y-margin))
-           ;; Get ALL chars on page, then filter by Y range
            (all-chars (pdf-info-charlayout page))
-           (filtered-chars
+           ;; Step 1: Filter by Y range only
+           (y-filtered-chars
             (seq-filter
              (lambda (char-info)
                (let* ((char-edges (cadr char-info))
                       (char-top (nth 1 char-edges))
                       (char-bottom (nth 3 char-edges)))
-                 ;; Include if character overlaps with our Y range
                  (and (< char-top y-max)
                       (> char-bottom y-min))))
              all-chars))
-           (char-groups (excerpt-note--group-chars-into-lines filtered-chars))
-           (lines (mapcar #'excerpt-note--chars-to-line char-groups)))
+           ;; Step 2: Group into lines by Y-center
+           (char-groups (excerpt-note--group-chars-into-lines y-filtered-chars))
+           ;; Step 3: For each line, filter to contiguous chars around X selection
+           (filtered-groups
+            (delq nil
+                  (mapcar
+                   (lambda (line-chars)
+                     (excerpt-note--filter-line-by-x-contiguous
+                      line-chars x-min x-max))
+                   char-groups)))
+           ;; Step 4: Convert to lines
+           (lines (mapcar #'excerpt-note--chars-to-line filtered-groups)))
       ;; Filter out empty lines
       (seq-filter (lambda (line)
                     (and line
@@ -654,177 +788,50 @@ This ensures we get complete lines, not truncated by edge boundaries."
                                (string-trim (excerpt-note--line-text line))))))
                   lines))))
 
-;;; List item detection
+;;; Main text extraction function
 
-(defun excerpt-note--line-is-list-item-p (text)
-  "Check if TEXT starts with a list item marker."
-  (let ((trimmed (string-trim-left text)))
-    (or
-     ;; Symbol list: ▶ xxx, • xxx, - xxx, * xxx
-     (cl-some (lambda (marker)
-                (string-prefix-p marker trimmed))
-              excerpt-note-list-markers)
-     ;; Numbered list: 1. xxx, 1) xxx, (1) xxx
-     (string-match-p "^[0-9]+[.)\\]] " trimmed)
-     (string-match-p "^([0-9]+) " trimmed)
-     ;; Letter list: a. xxx, a) xxx, (a) xxx
-     (string-match-p "^[a-zA-Z][.)] " trimmed)
-     (string-match-p "^([a-zA-Z]) " trimmed))))
-
-;;; Statistics collection
-
-(defun excerpt-note--collect-line-stats (lines)
-  "Collect statistics from LINES for paragraph detection.
-Returns plist with :avg-gap, :min-x, :avg-width."
-  (when (> (length lines) 1)
-    (let ((gaps '())
-          (xs '())
-          (widths '()))
-      (cl-loop for i from 0 below (length lines)
-               for line = (nth i lines)
-               do
-               (push (excerpt-note--line-start-x line) xs)
-               (push (excerpt-note--line-width line) widths)
-               (when (> i 0)
-                 (let ((gap (excerpt-note--lines-gap (nth (1- i) lines) line)))
-                   (when (> gap 0)  ; Only positive gaps
-                     (push gap gaps)))))
-      (list :avg-gap (when gaps (/ (apply #'+ gaps) (float (length gaps))))
-            :min-x (when xs (apply #'min xs))
-            :avg-width (when widths (/ (apply #'+ widths) (float (length widths))))))))
-
-;;; Paragraph break detection
-
-(defun excerpt-note--detect-paragraph-breaks (lines)
-  "Analyze LINES and return indices where paragraph breaks occur.
-Detection signals:
-1. Y gap significantly larger than average - paragraph spacing
-2. X position shifted right - first line indent
-3. Previous line significantly shorter - paragraph end
-4. Current line starts with list marker - list item"
-  (when (> (length lines) 1)
-    (let* ((stats (excerpt-note--collect-line-stats lines))
-           (avg-gap (plist-get stats :avg-gap))
-           (min-x (plist-get stats :min-x))
-           (avg-width (plist-get stats :avg-width))
-           (breaks '()))
-
-      (when excerpt-note-debug
-        (message "Line stats: avg-gap=%.4f min-x=%.4f avg-width=%.4f"
-                 (or avg-gap 0) (or min-x 0) (or avg-width 0)))
-
-      (cl-loop for i from 1 below (length lines)
-               for line = (nth i lines)
-               for prev-line = (nth (1- i) lines)
-               for text = (excerpt-note--line-text line)
-               for x = (excerpt-note--line-start-x line)
-               for gap = (excerpt-note--lines-gap prev-line line)
-               for prev-width = (excerpt-note--line-width prev-line)
-               do
-               (let ((is-break nil)
-                     (reasons '()))
-
-                 ;; Signal 1: Y gap > avg * threshold
-                 (when (and avg-gap
-                            (> avg-gap 0)
-                            (> gap (* avg-gap excerpt-note-paragraph-gap-threshold)))
-                   (setq is-break t)
-                   (push "large-gap" reasons))
-
-                 ;; Signal 2: X indent > threshold
-                 (when (and min-x
-                            (> (- x min-x) excerpt-note-indent-threshold))
-                   (setq is-break t)
-                   (push "indent" reasons))
-
-                 ;; Signal 3: Previous line short (< avg * 0.7)
-                 (when (and avg-width
-                            (> avg-width 0)
-                            (< prev-width (* avg-width excerpt-note-short-line-threshold)))
-                   (setq is-break t)
-                   (push "short-prev" reasons))
-
-                 ;; Signal 4: Current line is list item
-                 (when (excerpt-note--line-is-list-item-p text)
-                   (setq is-break t)
-                   (push "list-item" reasons))
-
-                 (when is-break
-                   (when excerpt-note-debug
-                     (message "Break at line %d: %s (text: %.20s...)"
-                              i (string-join reasons ",")
-                              (string-trim text)))
-                   (push i breaks))))
-
-      (nreverse breaks))))
-
-;;; Smart line joining
-
-(defun excerpt-note--smart-join-lines (lines breaks)
-  "Join LINES intelligently, preserving breaks at BREAKS positions.
-Handles:
-- Paragraph boundaries (double newline)
-- List items (single newline to preserve format)
-- Hyphenated words (remove hyphen and join)
-- Regular lines (join with space)"
-  (if (null lines)
-      ""
-    (let ((result "")
-          (in-list nil))
-      (cl-loop for i from 0 below (length lines)
-               for line = (nth i lines)
-               for text = (string-trim (excerpt-note--line-text line))
-               for is-list = (excerpt-note--line-is-list-item-p text)
-               for is-break = (member i breaks)
-               do
-               (cond
-                ;; Paragraph/list boundary: double newline
-                (is-break
-                 (setq result (concat result "\n\n" text))
-                 (setq in-list is-list))
-
-                ;; Inside list: single newline to preserve format
-                ((and in-list (not (string-empty-p result)))
-                 (setq result (concat result "\n" text)))
-
-                ;; Hyphenated word at end: remove hyphen and join directly
-                ((and (not (string-empty-p result))
-                      (string-suffix-p "-" result))
-                 (setq result (concat (substring result 0 -1) text)))
-
-                ;; Regular continuation: join with space
-                ((not (string-empty-p result))
-                 ;; Check if we need space (not for CJK characters)
-                 (let ((last-char (aref result (1- (length result))))
-                       (first-char (and (> (length text) 0) (aref text 0))))
-                   (if (and first-char
-                            (or (and (>= last-char #x4e00) (<= last-char #x9fff))
-                                (and (>= first-char #x4e00) (<= first-char #x9fff))))
-                       ;; CJK: no space
-                       (setq result (concat result text))
-                     ;; Non-CJK: add space
-                     (setq result (concat result " " text)))))
-
-                ;; First line
-                (t
-                 (setq result text))))
-
-      (string-trim result))))
-
-;;; Main smart extraction function
-
-(defun excerpt-note--pdf-extract-smart (page edges)
-  "Extract text from PAGE within EDGES using smart paragraph detection.
-Returns normalized text with proper paragraph breaks."
+(defun excerpt-note--pdf-extract-text (page edges)
+  "Extract text from PAGE within EDGES and merge into single paragraph.
+No paragraph detection - just merge all lines with proper spacing.
+Handles Drop Caps and hyphenated words correctly."
   (let ((lines (excerpt-note--get-pdf-lines-in-region page edges)))
-    (if (and lines (> (length lines) 0))
-        (let ((breaks (excerpt-note--detect-paragraph-breaks lines)))
-          (when excerpt-note-debug
-            (message "Smart extraction: %d lines, %d breaks detected"
-                     (length lines) (length breaks)))
-          (excerpt-note--smart-join-lines lines breaks))
-      ;; Fallback to regular extraction if no position data
-      nil)))
+    (when (and lines (> (length lines) 0))
+      (let ((result ""))
+        (dolist (line lines)
+          ;; Get line text, remove any newlines, then trim whitespace
+          (let* ((raw-text (excerpt-note--line-text line))
+                 (text (string-trim (replace-regexp-in-string "[\n\r]+" " " raw-text))))
+            (cond
+             ;; First line
+             ((string-empty-p result)
+              (setq result text))
+             ;; Hyphenated word at end: remove hyphen and join directly
+             ((string-suffix-p "-" result)
+              (setq result (concat (substring result 0 -1) text)))
+             ;; Check if we need space
+             (t
+              (let ((last-char (aref result (1- (length result))))
+                    (first-char (and (> (length text) 0) (aref text 0)))
+                    ;; Drop Cap: result is 1-2 uppercase letters, text starts lowercase
+                    (is-drop-cap-join
+                     (and (<= (length result) 2)
+                          (string-match-p "^[A-Z]+$" result)
+                          (> (length text) 0)
+                          (let ((fc (aref text 0)))
+                            (and (>= fc ?a) (<= fc ?z))))))
+                (cond
+                 ;; Drop Cap: join directly without space
+                 (is-drop-cap-join
+                  (setq result (concat result text)))
+                 ;; CJK: no space
+                 ((and first-char
+                       (or (and (>= last-char #x4e00) (<= last-char #x9fff))
+                           (and (>= first-char #x4e00) (<= first-char #x9fff))))
+                  (setq result (concat result text)))
+                 ;; Non-CJK: add space
+                 (t
+                  (setq result (concat result " " text)))))))))
+        (string-trim result)))))
 
 (defun excerpt-note--normalize-text (text)
   "Normalize TEXT extracted from EPUB (simple regex-based).
@@ -854,17 +861,17 @@ Used as fallback for PDF when smart detection fails.
 
 (defun excerpt-note--get-selected-text ()
   "Get selected text from PDF/EPUB, normalized.
-For PDFs, uses smart paragraph detection if enabled."
+For PDFs, uses position-based extraction if enabled."
   (cond
    ((eq major-mode 'pdf-view-mode)
     (if (pdf-view-active-region-p)
         (let* ((page (pdf-view-current-page))
                (edges (excerpt-note--pdf-extract-edges (pdf-view-active-region)))
-               (smart-text (when (and excerpt-note-smart-paragraph-detection
-                                      edges)
-                             (excerpt-note--pdf-extract-smart page edges))))
-          (if smart-text
-              smart-text
+               (extracted-text
+                (when (and excerpt-note-smart-text-extraction edges)
+                  (excerpt-note--pdf-extract-text page edges))))
+          (if extracted-text
+              extracted-text
             ;; Fallback to simple extraction
             (excerpt-note--normalize-text
              (car (pdf-view-active-region-text)))))
@@ -897,45 +904,35 @@ For PDFs, uses smart paragraph detection if enabled."
 ;;; Find excerpts with org-mode separator
 
 (defun excerpt-note--find-excerpts-in-region (start end)
-  "Find excerpts in region from START to END with org-mode separator."
+  "Find excerpts in region from START to END.
+New format: ● Pxx [content on same line]"
   (let (excerpts)
     (save-excursion
       (goto-char start)
-      (while (re-search-forward
-              "^[ \t]*@p\\.\\([0-9]+\\)[ \t]*|[ \t]*\\([^|]+?\\)[ \t]*|[ \t]*\\(.+\\)$"
-              end t)
-        (let* ((page (string-to-number (match-string 1)))
-               (file (string-trim (match-string 2)))
-               (location-str (string-trim (match-string 3)))
-               (marker-start (match-beginning 0))
-               (marker-end (match-end 0)))
+      ;; Match: ● P followed by page number and space
+      (while (re-search-forward "^[ \t]*\\(● P\\([0-9]+\\) \\)" end t)
+        (let* ((page (string-to-number (match-string 2)))
+               (marker-start (match-beginning 1))
+               (marker-end (match-end 1))  ; End of "● Pxx "
+               (body-start (point))  ; Content starts here (same line)
+               (body-end (save-excursion
+                           (end-of-line)
+                           (point)))
+               ;; Get file/location from text properties if available
+               (file (get-text-property marker-start 'excerpt-note-file))
+               (location-str (get-text-property marker-start 'excerpt-note-location)))
 
           (when excerpt-note-debug
-            (message "Found excerpt: page=%d file='%s' loc='%s'"
-                    page file location-str))
+            (message "Found excerpt: page=%d" page))
 
-          (forward-line 1)
-          (let ((body-start (point))
-                (body-end (save-excursion
-                           ;; Match org separator (5+ dashes) or next marker
-                           (if (re-search-forward
-                                "^[ \t]*\\(-----+[ \t]*$\\|@p\\.\\)"
-                                nil t)
-                               (line-beginning-position)
-                             (point-max)))))
-
-            (when excerpt-note-debug
-              (message "  body-start=%d body-end=%d" body-start body-end))
-
-            (when (< body-start body-end)
-              (push (list :marker-start marker-start
-                         :marker-end marker-end
-                         :page page
-                         :file file
-                         :location location-str
-                         :body-start body-start
-                         :body-end body-end)
-                    excerpts))))))
+          (push (list :marker-start marker-start
+                      :marker-end marker-end
+                      :page page
+                      :file (or file "")
+                      :location (or location-str "")
+                      :body-start body-start
+                      :body-end body-end)
+                excerpts))))
     (nreverse excerpts)))
 
 (defun excerpt-note--find-all-excerpts ()
@@ -944,25 +941,18 @@ For PDFs, uses smart paragraph detection if enabled."
 
 (defun excerpt-note--find-excerpts-for-page (page file)
   "Find all excerpts for PAGE in FILE in current buffer."
-  (let ((positions '())
-        (file-name (file-name-nondirectory file)))
+  (let ((positions '()))
     (save-excursion
       (goto-char (point-min))
-      (while (re-search-forward
-              (format "^[ \t]*@p\\.%d[ \t]*|[ \t]*%s[ \t]*|"
-                      page
-                      (regexp-quote file-name))
-              nil t)
-        (push (line-beginning-position) positions)))
+      (while (re-search-forward (format "^[ \t]*● P%d " page) nil t)
+        ;; Check if file matches via text property
+        (let ((excerpt-file (get-text-property (match-beginning 0) 'excerpt-note-file)))
+          (when (or (null file)
+                    (null excerpt-file)
+                    (string-match-p (regexp-quote (file-name-nondirectory file))
+                                    excerpt-file))
+            (push (line-beginning-position) positions)))))
     (nreverse positions)))
-
-;;; Overlay protection
-
-(defun excerpt-note--protect-metadata (ov after-p _beg _end &optional _len)
-  "Prevent modification of protected metadata regions."
-  (unless after-p
-    (when (overlay-get ov 'read-only)
-      (user-error "This metadata is protected"))))
 
 ;;; Optimized overlay system with org separator
 
@@ -994,7 +984,8 @@ For PDFs, uses smart paragraph detection if enabled."
             (overlay-put sep-ov 'evaporate t)))))))
 
 (defun excerpt-note--add-overlay-for-excerpt (excerpt)
-  "Add overlay for a single EXCERPT with optimized single-overlay approach."
+  "Add overlay for a single EXCERPT.
+New format: ● Pxx [content] on same line."
   (let* ((marker-start (plist-get excerpt :marker-start))
          (marker-end (plist-get excerpt :marker-end))
          (body-start (plist-get excerpt :body-start))
@@ -1002,41 +993,31 @@ For PDFs, uses smart paragraph detection if enabled."
          (page (plist-get excerpt :page))
          (file (plist-get excerpt :file)))
 
-    ;; Single overlay for metadata line
-    (let ((marker-ov (make-overlay marker-start (1+ marker-end)))
-          (badge-map (make-sparse-keymap))
-          (prefix (propertize (format "p.%d ➜ " page)
-                            'face 'excerpt-note-marker-face
-                            'mouse-face 'highlight
-                            'help-echo "Click or C-c e j to jump")))
-
-      (define-key badge-map [mouse-1]
-        (lambda (event)
-          (interactive "e")
-          (excerpt-note-jump-to-source)))
-
-      (setq prefix (propertize prefix 'keymap badge-map))
-
-      (overlay-put marker-ov 'before-string prefix)
-      (overlay-put marker-ov 'invisible t)
-      (overlay-put marker-ov 'read-only t)
-      (overlay-put marker-ov 'modification-hooks
-                   '(excerpt-note--protect-metadata))
-      (overlay-put marker-ov 'insert-in-front-hooks
-                   '(excerpt-note--protect-metadata))
+    ;; Style the marker part (● Pxx)
+    (let ((marker-ov (make-overlay marker-start marker-end)))
+      (overlay-put marker-ov 'face 'excerpt-note-marker-face)
+      (overlay-put marker-ov 'mouse-face 'highlight)
+      (overlay-put marker-ov 'help-echo "Click or C-c e j to jump to source")
+      (overlay-put marker-ov 'keymap
+                   (let ((map (make-sparse-keymap)))
+                     (define-key map [mouse-1]
+                       (lambda (event)
+                         (interactive "e")
+                         (excerpt-note-jump-to-source)))
+                     map))
       (overlay-put marker-ov 'excerpt-note-overlay t)
       (overlay-put marker-ov 'excerpt-note-file file)
       (overlay-put marker-ov 'evaporate t))
 
-    ;; Body overlay for styling
-    (let ((body-ov (make-overlay body-start body-end)))
-      (overlay-put body-ov 'face 'excerpt-note-content-face)
-      (overlay-put body-ov 'priority 100)
-      (overlay-put body-ov 'excerpt-note-overlay t)
-      (overlay-put body-ov 'excerpt-note-file file)
-      (overlay-put body-ov 'evaporate t)
-      (overlay-put body-ov 'help-echo
-                  (format "Excerpt from page %d" page)))))
+    ;; Style the content part (gray)
+    (when (and body-start body-end (< body-start body-end))
+      (let ((body-ov (make-overlay body-start body-end)))
+        (overlay-put body-ov 'face 'excerpt-note-content-face)
+        (overlay-put body-ov 'excerpt-note-overlay t)
+        (overlay-put body-ov 'excerpt-note-file file)
+        (overlay-put body-ov 'evaporate t)
+        (overlay-put body-ov 'help-echo
+                     (format "Excerpt from page %d" page))))))
 
 (defun excerpt-note--add-overlays ()
   "Add overlays to all excerpts."
@@ -1294,7 +1275,7 @@ Returns (PAGE . PREVIEW) if duplicate found, nil otherwise."
             (let ((match-pos (match-beginning 0)))
               ;; Find the marker line for this excerpt
               (goto-char match-pos)
-              (when (re-search-backward "^[ \t]*@p\\.\\([0-9]+\\)" nil t)
+              (when (re-search-backward "^[ \t]*● P\\([0-9]+\\)" nil t)
                 (let* ((page (string-to-number (match-string 1)))
                        (preview-start (save-excursion
                                         (forward-line 1)
@@ -1313,10 +1294,8 @@ Returns (PAGE . PREVIEW) if duplicate found, nil otherwise."
 (defun excerpt-note--do-insert (text loc-info)
   "Internal function to insert excerpt with TEXT and LOC-INFO.
 Structure:
-  [user notes area]
-  @p.XX | file | location
-  [excerpt content]
-  -----"
+  ● Pxx [excerpt content]
+  [user notes below]"
   (let* ((location (plist-get loc-info :location))
          (file (plist-get loc-info :file))
          (type (plist-get loc-info :type))
@@ -1343,17 +1322,9 @@ Structure:
           (insert "\n")
         (insert "\n\n")))
 
-    ;; 1. User notes area (empty line for user to fill)
-    (setq note-position (point))
-    (insert "\n\n")
-
-    ;; 2. Marker line
+    ;; 1. Marker + content on same line: ● Pxx [content]
     (let ((marker-start (point)))
-      (insert (format "@p.%d | %s | %s\n"
-                     page
-                     file
-                     formatted-location))
-
+      (insert (format "● P%d " page))
       (add-text-properties marker-start (point)
                           `(excerpt-note-marker t
                             excerpt-note-page ,page
@@ -1361,13 +1332,11 @@ Structure:
                             excerpt-note-type ,type
                             excerpt-note-location ,formatted-location)))
 
-    ;; 3. Excerpt content
+    ;; 2. Excerpt content (on same line)
     (let ((content-start (point)))
       (when text
-        (insert text)
-        (unless (string-suffix-p "\n" text)
-          (insert "\n")))
-
+        (insert text))
+      (insert "\n")
       (add-text-properties content-start (point)
                           `(excerpt-note-content t
                             excerpt-note-page ,page
@@ -1375,11 +1344,9 @@ Structure:
                             excerpt-note-type ,type
                             excerpt-note-location ,formatted-location)))
 
-    ;; 4. Separator
-    (let ((sep-start (point)))
-      (insert "-----\n\n")
-      (add-text-properties sep-start (- (point) 1)
-                          '(excerpt-note-separator t)))
+    ;; 3. User notes area (empty line below for user to fill)
+    (setq note-position (point))
+    (insert "\n")
 
     ;; Position cursor at notes area for immediate editing
     (goto-char note-position)
@@ -1388,8 +1355,8 @@ Structure:
       (run-with-idle-timer 0.1 nil 'excerpt-note--refresh-overlays))
 
     (if text
-        (message "✓ Excerpt from p.%d inserted. Add your notes above the marker" page)
-      (message "✓ Empty anchor at p.%d created. Add your notes above the marker" page))))
+        (message "✓ Excerpt from p.%d inserted. Add notes below." page)
+      (message "✓ Empty anchor at p.%d created. Add notes below." page))))
 
 ;;;###autoload
 (defun excerpt-note-insert ()
@@ -1435,7 +1402,7 @@ PAGE is the page number used in the label."
     (let* ((excerpt-start (point))
            (excerpt-end (save-excursion
                           (if (re-search-forward
-                               "^[ \t]*\\(-----+\\|@p\\.\\)" nil t)
+                               "^[ \t]*\\(-----+\\|● P\\)" nil t)
                               (line-beginning-position)
                             (point-max))))
            (preview (truncate-string-to-width
@@ -1515,7 +1482,7 @@ PAGE is the page number used in the label."
     (goto-char (point-min))
     (if (search-forward search-text nil t)
         (progn
-          (re-search-backward "^[ \t]*@p\\." nil t)
+          (re-search-backward "^[ \t]*● P" nil t)
           (excerpt-note--ensure-overlays-at-point)
           (recenter)
           (message "✓ Found excerpt containing selected text"))
@@ -1524,45 +1491,47 @@ PAGE is the page number used in the label."
 ;;; Jump to source
 
 (defun excerpt-note--find-marker-for-point ()
-  "Find the @p. marker position for the excerpt unit containing point.
+  "Find the ● P marker position for the excerpt unit containing point.
 Returns the position of the marker line, or nil if not found."
   (save-excursion
     (let ((orig (point)))
       (beginning-of-line)
       (cond
        ;; Already on marker line
-       ((looking-at "^[ \t]*@p\\.")
+       ((looking-at "^[ \t]*● P")
         (point))
-       ;; Search backward for @p. or -----
-       ((re-search-backward "^[ \t]*\\(@p\\.\\|-----+[ \t]*$\\)" nil t)
+       ;; Search backward for ● P or -----
+       ((re-search-backward "^[ \t]*\\(● P\\|-----+[ \t]*$\\)" nil t)
         (beginning-of-line)
-        (if (looking-at "^[ \t]*@p\\.")
+        (if (looking-at "^[ \t]*● P")
             (point)
           ;; Hit separator - cursor is in notes area, search forward
           (goto-char orig)
-          (when (re-search-forward "^[ \t]*@p\\." nil t)
+          (when (re-search-forward "^[ \t]*● P" nil t)
             (beginning-of-line)
             (point))))
        ;; Nothing found backward, try forward (at beginning of buffer)
        (t
         (goto-char orig)
-        (when (re-search-forward "^[ \t]*@p\\." nil t)
+        (when (re-search-forward "^[ \t]*● P" nil t)
           (beginning-of-line)
           (point)))))))
 
 (defun excerpt-note--parse-marker-line-at-point ()
-  "Parse excerpt marker line at or near point."
+  "Parse excerpt marker line at or near point.
+New format: ● Pxx [content], with file/location in text properties."
   (save-excursion
     (when-let* ((marker-pos (excerpt-note--find-marker-for-point)))
       (goto-char marker-pos)
-      (when (looking-at "^[ \t]*@p\\.\\([0-9]+\\)[ \t]*|[ \t]*\\([^|]+?\\)[ \t]*|[ \t]*\\(.+\\)$")
+      (when (looking-at "^[ \t]*● P\\([0-9]+\\) ")
         (let* ((page (string-to-number (match-string 1)))
-               (file (string-trim (match-string 2)))
-               (location-str (string-trim (match-string 3)))
-               (type (if (and file (string-match-p "\\.epub$" file)) 'epub 'pdf)))
+               (file (get-text-property marker-pos 'excerpt-note-file))
+               (location-str (get-text-property marker-pos 'excerpt-note-location))
+               (type (or (get-text-property marker-pos 'excerpt-note-type)
+                         (if (and file (string-match-p "\\.epub$" file)) 'epub 'pdf))))
           (list :page page
-                :file file
-                :location location-str
+                :file (or file "")
+                :location (or location-str "")
                 :type type))))))
 
 (defun excerpt-note--find-file-property-nearby (pos)
@@ -1608,23 +1577,16 @@ Returns (FILE . FOUND-POS) or nil."
 
 (defun excerpt-note--extract-anchor-text-at-point ()
   "Extract the first 30 characters of the excerpt body at point.
-Used as anchor text for EPUB secondary location verification."
+Used as anchor text for EPUB secondary location verification.
+New format: content is on same line after ● Pxx."
   (save-excursion
     (when-let* ((marker-pos (excerpt-note--find-marker-for-point)))
       (goto-char marker-pos)
-      (forward-line 1)
-      (let* ((body-start (point))
-             (body-end (save-excursion
-                         (if (re-search-forward
-                              "^[ \t]*\\(-----+[ \t]*$\\|@p\\.\\)" nil t)
-                             (line-beginning-position)
-                           (point-max))))
-             (body-text (string-trim
-                         (buffer-substring-no-properties
-                          body-start
-                          (min (+ body-start 60) body-end)))))
-        (when (> (length body-text) 0)
-          (substring body-text 0 (min 30 (length body-text))))))))
+      ;; New format: ● Pxx [content on same line]
+      (when (looking-at "^[ \t]*● P[0-9]+ \\(.*\\)$")
+        (let ((body-text (string-trim (match-string 1))))
+          (when (> (length body-text) 0)
+            (substring body-text 0 (min 30 (length body-text)))))))))
 
 (defun excerpt-note--parse-location-string (location-str)
   "Parse LOCATION-STR into a Lisp value (number or cons cell).
@@ -1676,29 +1638,27 @@ Returns the parsed value, or LOCATION-STR unchanged on failure."
 
 (defun excerpt-note--excerpt-region-at-point ()
   "Return (BEG END MARKER-POS) of the full excerpt unit at point, or nil.
-An excerpt unit is: [user notes] + @p.marker + [body] + -----."
+An excerpt unit is: ● Pxx [content] + [user notes below]."
   (save-excursion
     (let ((orig (point))
           marker-pos)
-      ;; Step 1: Find the @p. marker that owns point.
-      ;; - If backward search hits @p. before -----, point is in content area.
-      ;; - If backward search hits ----- first (or nothing), point is in
-      ;;   the notes area above the next marker; search forward instead.
+      ;; Step 1: Find the ● P marker that owns point.
+      ;; Search backward for marker or separator.
       (beginning-of-line)
       (cond
-       ((looking-at "^[ \t]*@p\\.")
+       ((looking-at "^[ \t]*● P")
         (setq marker-pos (point)))
-       ((re-search-backward "^[ \t]*\\(@p\\.\\|-----+\\)" nil t)
+       ((re-search-backward "^[ \t]*\\(● P\\|-----+\\)" nil t)
         (beginning-of-line)
-        (if (looking-at "^[ \t]*@p\\.")
+        (if (looking-at "^[ \t]*● P")
             (setq marker-pos (point))
           (goto-char orig)
-          (when (re-search-forward "^[ \t]*@p\\." nil t)
+          (when (re-search-forward "^[ \t]*● P" nil t)
             (beginning-of-line)
             (setq marker-pos (point)))))
        (t
         (goto-char orig)
-        (when (re-search-forward "^[ \t]*@p\\." nil t)
+        (when (re-search-forward "^[ \t]*● P" nil t)
           (beginning-of-line)
           (setq marker-pos (point)))))
 
@@ -1787,95 +1747,9 @@ An excerpt unit is: [user notes] + @p.marker + [body] + -----."
 
 ;;; Path fix utility
 
-(defun excerpt-note--try-find-path-for-file (file)
-  "Try to find the full path for bare FILE name.
-Searches SOURCE_FILE header, configured search paths, and prompts user.
-Returns the resolved path or nil."
-  (or
-   ;; Try SOURCE_FILE header in current buffer
-   (save-excursion
-     (goto-char (point-min))
-     (when-let* ((_ (re-search-forward "^#\\+SOURCE_FILE:[ \t]*\\(.+\\)$" nil t))
-                 (source-file (string-trim (match-string 1)))
-                 (_ (string-suffix-p file source-file)))
-       source-file))
-   ;; Try configured search paths
-   (when-let* ((absolute-path (excerpt-note--find-file-in-search-paths file)))
-     (excerpt-note--make-relative-path absolute-path))
-   ;; Try manual location
-   (when (y-or-n-p (format "Could not find '%s'. Locate manually? " file))
-     (let ((user-path (read-file-name
-                       (format "Locate file '%s': " file)
-                       (car excerpt-note-search-paths)
-                       nil t)))
-       (when (and user-path (file-exists-p user-path))
-         (excerpt-note--make-relative-path user-path))))))
-
-;;;###autoload
-(defun excerpt-note-fix-file-paths ()
-  "Fix old excerpts that only have filename without path."
-  (interactive)
-  (unless (derived-mode-p 'org-mode)
-    (user-error "Must be in org-mode buffer"))
-  (let ((fixed-count 0)
-        (failed-files '()))
-    (save-excursion
-      (goto-char (point-min))
-      (while (re-search-forward
-              "^[ \t]*@p\\.\\([0-9]+\\)[ \t]*|[ \t]*\\([^|]+?\\)[ \t]*|[ \t]*\\(.+\\)$"
-              nil t)
-        (let* ((page (string-to-number (match-string 1)))
-               (file (string-trim (match-string 2)))
-               (location-str (string-trim (match-string 3)))
-               (marker-start (match-beginning 0))
-               (marker-end (match-end 0)))
-          (when (and file
-                     (not (string-match-p "/" file))
-                     (not (string-match-p "\\\\" file)))
-            (let ((found-path (excerpt-note--try-find-path-for-file file)))
-              (if found-path
-                  (progn
-                    (goto-char marker-start)
-                    (delete-region marker-start marker-end)
-                    (insert (format "@p.%d | %s | %s"
-                                   page found-path location-str))
-                    (setq fixed-count (1+ fixed-count))
-                    (message "Fixed: %s → %s" file found-path))
-                (push file failed-files)))))))
-    (cond
-     ((> fixed-count 0)
-      (save-buffer)
-      (excerpt-note--refresh-overlays)
-      (message "✓ Fixed %d excerpts" fixed-count))
-     (t
-      (message "No excerpts need fixing")))
-    (when failed-files
-      (message "⚠ Could not locate: %s" (string-join failed-files ", ")))))
-
-;;;###autoload
-(defun excerpt-note-update-source-file ()
-  "Update the source file path for current excerpt."
-  (interactive)
-  (save-excursion
-    (beginning-of-line)
-    (unless (looking-at "^[ \t]*@p\\.")
-      (re-search-backward "^[ \t]*@p\\." nil t))
-    (when (looking-at "^[ \t]*@p\\.\\([0-9]+\\)[ \t]*|[ \t]*\\([^|]+?\\)[ \t]*|[ \t]*\\(.+\\)$")
-      (let* ((page (match-string 1))
-             (old-file (string-trim (match-string 2)))
-             (location (string-trim (match-string 3)))
-             (new-file (read-file-name
-                       (format "Locate source file '%s': " old-file)
-                       (car excerpt-note-search-paths)
-                       nil t))
-             (relative-path (when (file-exists-p new-file)
-                              (excerpt-note--make-relative-path new-file))))
-        (when relative-path
-          (delete-region (match-beginning 0) (match-end 0))
-          (insert (format "@p.%s | %s | %s" page relative-path location))
-          (save-buffer)
-          (excerpt-note--refresh-overlays)
-          (message "✓ Updated path: %s" relative-path))))))
+;; Note: excerpt-note-fix-file-paths, excerpt-note-update-source-file, and
+;; excerpt-note--try-find-path-for-file are removed with the new compact format
+;; are deprecated with the new compact format (file info in text properties)
 
 ;;; Debug utilities
 
@@ -1898,8 +1772,8 @@ Returns the resolved path or nil."
       (message "No region selected"))))
 
 ;;;###autoload
-(defun excerpt-note-preview-smart-extraction ()
-  "Preview smart paragraph detection results for current PDF selection."
+(defun excerpt-note-preview-extraction ()
+  "Preview text extraction results for current PDF selection."
   (interactive)
   (unless (eq major-mode 'pdf-view-mode)
     (user-error "Only works in PDF buffers"))
@@ -1908,69 +1782,115 @@ Returns the resolved path or nil."
 
   (let* ((page (pdf-view-current-page))
          (edges (excerpt-note--pdf-extract-edges (pdf-view-active-region)))
-         (raw-text (car (pdf-view-active-region-text)))
          (lines (excerpt-note--get-pdf-lines-in-region page edges))
-         (breaks (when lines (excerpt-note--detect-paragraph-breaks lines)))
-         (smart-text (when lines (excerpt-note--smart-join-lines lines breaks))))
+         (extracted-text (when lines (excerpt-note--pdf-extract-text page edges))))
 
-    (with-current-buffer (get-buffer-create "*Smart Extraction Preview*")
+    (with-current-buffer (get-buffer-create "*Extraction Preview*")
       (erase-buffer)
-      (insert (format "Page %d | %d lines | %d paragraph breaks\n\n"
-                      page (length lines) (length breaks)))
+      (insert (format "Page %d | %d lines\n\n" page (length lines)))
 
-      ;; Line details with break markers
+      ;; Show lines
       (when lines
-        (cl-loop for i from 0 below (length lines)
-                 for line = (nth i lines)
-                 do
-                 (insert (format "%s%s\n"
-                                 (if (member i breaks) "⏎ " "  ")
-                                 (truncate-string-to-width
-                                  (excerpt-note--line-text line) 70 nil nil "...")))))
+        (dolist (line lines)
+          (insert (format "  %s\n"
+                          (truncate-string-to-width
+                           (excerpt-note--line-text line) 70 nil nil "...")))))
 
       (insert "\n--- RESULT ---\n")
-      (insert (or smart-text (excerpt-note--normalize-text raw-text)))
+      (insert (or extracted-text "[extraction failed]"))
       (insert "\n")
 
       (goto-char (point-min))
       (pop-to-buffer (current-buffer)))))
 
 ;;;###autoload
+(defun excerpt-note-debug-char-positions ()
+  "Debug character positions to see Y coordinate differences."
+  (interactive)
+  (unless (eq major-mode 'pdf-view-mode)
+    (user-error "Only works in PDF buffers"))
+  (unless (pdf-view-active-region-p)
+    (user-error "No region selected"))
+
+  (let* ((page (pdf-view-current-page))
+         (edges (excerpt-note--pdf-extract-edges (pdf-view-active-region)))
+         (edge-top (nth 1 edges))
+         (edge-bottom (nth 3 edges))
+         (y-margin 0.005)
+         (y-min (- (min edge-top edge-bottom) y-margin))
+         (y-max (+ (max edge-top edge-bottom) y-margin))
+         (all-chars (pdf-info-charlayout page))
+         (filtered-chars
+          (seq-filter
+           (lambda (char-info)
+             (let* ((char-edges (cadr char-info))
+                    (char-top (nth 1 char-edges))
+                    (char-bottom (nth 3 char-edges)))
+               (and (< char-top y-max)
+                    (> char-bottom y-min))))
+           all-chars)))
+
+    (with-current-buffer (get-buffer-create "*Char Positions Debug*")
+      (erase-buffer)
+      (insert (format "Page %d | %d characters in region\n\n" page (length filtered-chars)))
+      (insert "Char | Y-top    | Y-bottom | X-left   | Text so far...\n")
+      (insert "-----+----------+----------+----------+---------------\n")
+
+      (let ((last-y nil)
+            (current-text ""))
+        (dolist (char-info filtered-chars)
+          (let* ((char (car char-info))
+                 (char-edges (cadr char-info))
+                 (y-top (nth 1 char-edges))
+                 (y-bottom (nth 3 char-edges))
+                 (x-left (nth 0 char-edges))
+                 (y-diff (when last-y (- y-top last-y))))
+            ;; Mark line breaks
+            (when (and last-y (> (abs (- y-top last-y)) 0.008))
+              (insert (format "---- Y jump: %.5f (threshold: 0.008) ----\n" y-diff))
+              (insert (format "     Line so far: %s\n\n" (string-trim current-text)))
+              (setq current-text ""))
+            (setq current-text (concat current-text (string char)))
+            (setq last-y y-top))))
+
+      (goto-char (point-min))
+      (pop-to-buffer (current-buffer)))))
+
+;;;###autoload
+(defun excerpt-note-debug-region ()
+  "Debug: show raw region data and computed edges."
+  (interactive)
+  (unless (eq major-mode 'pdf-view-mode)
+    (user-error "Only works in PDF buffers"))
+  (unless (pdf-view-active-region-p)
+    (user-error "No region selected"))
+  (let* ((raw-region (pdf-view-active-region))
+         (computed-edges (excerpt-note--pdf-extract-edges raw-region)))
+    (message "Raw region: %S\nComputed edges: %S" raw-region computed-edges)))
+
+;;;###autoload
 (defun excerpt-note-debug-at-point ()
   "Debug excerpt detection at current position."
   (interactive)
-  (let ((excerpt-note-debug t))
-    (save-excursion
-      (goto-char (point-min))
-      (let ((count 0)
-            (results '()))
-        (while (re-search-forward
-                "^[ \t]*@p\\.\\([0-9]+\\)[ \t]*|[ \t]*\\([^|]+?\\)[ \t]*|[ \t]*\\(.+\\)$"
-                nil t)
-          (setq count (1+ count))
-          (let ((info (format "Excerpt %d: page=%s file='%s' loc='%s'"
-                            count
-                            (match-string 1)
-                            (match-string 2)
-                            (match-string 3))))
-            (push info results)
-            (message "%s" info)))
-
-        (cond
-         ((> count 0)
-          (message "========================================")
-          (message "Total excerpts found: %d" count)
+  (let ((excerpts (excerpt-note--find-all-excerpts)))
+    (if excerpts
+        (progn
+          (message "Found %d excerpts" (length excerpts))
           (with-current-buffer (get-buffer-create "*Excerpt Debug*")
             (erase-buffer)
-            (insert "Excerpt Detection Results\n")
-            (insert "==========================\n\n")
-            (insert (format "Total found: %d\n\n" count))
-            (dolist (result (nreverse results))
-              (insert result "\n"))
+            (insert (format "Total found: %d\n\n" (length excerpts)))
+            (dolist (excerpt excerpts)
+              (insert (format "● P%d: %s\n"
+                              (plist-get excerpt :page)
+                              (truncate-string-to-width
+                               (buffer-substring-no-properties
+                                (plist-get excerpt :body-start)
+                                (min (+ (plist-get excerpt :body-start) 50)
+                                     (plist-get excerpt :body-end)))
+                               50 nil nil "..."))))
             (goto-char (point-min))
             (pop-to-buffer (current-buffer))))
-         (t
-          (message "No excerpts found! Check your marker format.")))))))
+      (message "No excerpts found!"))))
 
 ;;;###autoload
 (defun excerpt-note-force-refresh ()
