@@ -1,4 +1,4 @@
-;;; excerpt-note.el --- Seamless inline excerpts -*- lexical-binding: t; -*-
+;;; passages.el --- Seamless inline excerpts -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
 ;; Author: Your Name
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Excerpt-note provides a lightweight note-taking system for PDFs and EPUBs.
+;; Passages provides a lightweight note-taking system for PDFs and EPUBs.
 ;; Features:
 ;; - Seamless inline excerpts with precise anchors
 ;; - Preserves original text formatting from PDFs
@@ -24,8 +24,8 @@
 ;; - Comprehensive debugging utilities
 ;;
 ;; Architecture:
-;; - `excerpt-note-mode': Minor mode for Org buffers (overlays, JIT-lock)
-;; - `excerpt-note-doc-mode': Minor mode for PDF/EPUB buffers (keybindings)
+;; - `passages-mode': Minor mode for Org buffers (overlays, JIT-lock)
+;; - `passages-doc-mode': Minor mode for PDF/EPUB buffers (keybindings)
 
 ;;; Code:
 
@@ -37,93 +37,93 @@
 
 ;;; Customization
 
-(defgroup excerpt-note nil
-  "Settings for excerpt-note."
+(defgroup passages nil
+  "Settings for passages."
   :group 'text
-  :prefix "excerpt-note-")
+  :prefix "passages-")
 
-(defcustom excerpt-note-auto-parse t
+(defcustom passages-auto-parse t
   "Automatically parse excerpts when opening a file."
   :type 'boolean
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defcustom excerpt-note-directory nil
+(defcustom passages-directory nil
   "Directory for storing note files."
   :type '(choice (const :tag "Next to source files" nil)
                  (directory :tag "Custom directory"))
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defcustom excerpt-note-use-citar t
+(defcustom passages-use-citar t
   "Try to use existing citar-denote notes if available."
   :type 'boolean
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defcustom excerpt-note-use-denote t
+(defcustom passages-use-denote t
   "Use denote for note management when citar-denote is not available."
   :type 'boolean
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defcustom excerpt-note-denote-keyword "excerpt"
+(defcustom passages-denote-keyword "excerpt"
   "Denote keyword (file tag) for excerpt notes."
   :type 'string
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defcustom excerpt-note-use-relative-paths t
+(defcustom passages-use-relative-paths t
   "Store relative paths instead of absolute paths for portability."
   :type 'boolean
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defcustom excerpt-note-search-paths
+(defcustom passages-search-paths
   '("~/Library/CloudStorage/Dropbox/org/bib/files/"
     "~/Library/CloudStorage/Dropbox/org/books/"
     "~/Library/CloudStorage/Dropbox/org/")
   "Directories to search for source files when resolving relative paths.
 Paths are tried in order until file is found."
   :type '(repeat directory)
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defcustom excerpt-note-debug nil
+(defcustom passages-debug nil
   "Enable debug logging for troubleshooting."
   :type 'boolean
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defcustom excerpt-note-smart-text-extraction t
+(defcustom passages-smart-text-extraction t
   "Use position-based text extraction for PDFs.
 When non-nil, uses character position information to properly
 merge text, handling Drop Caps and mixed font sizes correctly."
   :type 'boolean
-  :group 'excerpt-note)
+  :group 'passages)
 
 ;;; Faces
 
-(defface excerpt-note-content-face
+(defface passages-content-face
   '((t :foreground "#666666" :extend t))
   "Face for excerpt content (gray text)."
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defface excerpt-note-marker-face
-  '((t :foreground "#e6a23c" :height 1.1 :weight bold))
+(defface passages-marker-face
+  '((t :foreground "#e6a23c"))
   "Face for page marker like '● P24'."
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defface excerpt-note-separator-face
+(defface passages-separator-face
   '((((background light)) :foreground "#e0e0e0")
     (((background dark))  :foreground "#3a3a3a"))
   "Face for separator line -----."
-  :group 'excerpt-note)
+  :group 'passages)
 
 ;;; Citar-Denote integration
 
-(defun excerpt-note--citar-denote-available-p ()
+(defun passages--citar-denote-available-p ()
   "Check if citar-denote is available and active."
-  (and excerpt-note-use-citar
+  (and passages-use-citar
        (require 'citar nil t)
        (require 'citar-denote nil t)
        (bound-and-true-p citar-denote-mode)
        (fboundp 'citar-denote--get-notes)
        (fboundp 'denote-directory-files)))
 
-(defun excerpt-note--expand-bib-file (filename)
+(defun passages--expand-bib-file (filename)
   "Expand FILENAME relative to bibliography or library paths."
   (let ((possible-paths '()))
 
@@ -146,13 +146,13 @@ merge text, handling Drop Caps and mixed font sizes correctly."
 
     (delete-dups possible-paths)))
 
-(defun excerpt-note--find-citar-key-for-file (file)
+(defun passages--find-citar-key-for-file (file)
   "Find citar citation key for FILE by searching bibliography entries."
   (when (require 'citar nil t)
     (let ((file-normalized (expand-file-name file))
           (file-name (file-name-nondirectory file)))
 
-      (when excerpt-note-debug
+      (when passages-debug
         (message "=== Searching for citekey ===")
         (message "Looking for file: %s" file-normalized)
         (message "Filename: %s" file-name))
@@ -164,22 +164,22 @@ merge text, handling Drop Caps and mixed font sizes correctly."
                (let ((file-field (or (cdr (assoc "file" entry-data))
                                     (cdr (assoc "_file" entry-data)))))
 
-                 (when (and file-field excerpt-note-debug)
+                 (when (and file-field passages-debug)
                    (message "Entry %s has file field: %s" key file-field))
 
                  (when file-field
                    (let* ((bib-files (mapcar #'string-trim
                                             (split-string file-field ";" t "[ \t\n]+")))
-                          (expanded-files (mapcan #'excerpt-note--expand-bib-file bib-files)))
+                          (expanded-files (mapcan #'passages--expand-bib-file bib-files)))
 
-                     (when excerpt-note-debug
+                     (when passages-debug
                        (message "  Expanded to: %s" expanded-files))
 
                      (when (or (member file-normalized expanded-files)
                                (member file-name
                                       (mapcar #'file-name-nondirectory
                                              (append bib-files expanded-files))))
-                       (when excerpt-note-debug
+                       (when passages-debug
                          (message "  ✓ MATCH! Citekey: %s" key))
                        (throw 'found key))))))
              (citar-get-entries))
@@ -187,43 +187,43 @@ merge text, handling Drop Caps and mixed font sizes correctly."
            (message "Error searching citar entries: %s" (error-message-string err))
            nil))
 
-        (when excerpt-note-debug
+        (when passages-debug
           (message "  ✗ No match found"))
         nil))))
 
-(defun excerpt-note--find-citar-note (source-file)
+(defun passages--find-citar-note (source-file)
   "Try to find existing citar-denote note for SOURCE-FILE."
-  (when (excerpt-note--citar-denote-available-p)
-    (if-let* ((citekey (excerpt-note--find-citar-key-for-file source-file)))
+  (when (passages--citar-denote-available-p)
+    (if-let* ((citekey (passages--find-citar-key-for-file source-file)))
         (condition-case nil
             (when-let* ((notes-hash (citar-denote--get-notes (list citekey)))
                         (note-files (gethash citekey notes-hash))
                         (note-file (car note-files)))
               (message "Using existing citar-denote note: %s"
                       (file-name-nondirectory note-file))
-              (excerpt-note--normalize-path note-file))
+              (passages--normalize-path note-file))
           (error nil))
-      (when excerpt-note-debug
+      (when passages-debug
         (message "No citation key found in bibliography for: %s"
                 (file-name-nondirectory source-file))))))
 
 ;;; Denote integration
 
-(defun excerpt-note--denote-available-p ()
+(defun passages--denote-available-p ()
   "Check if denote is available."
-  (and excerpt-note-use-denote
+  (and passages-use-denote
        (require 'denote nil t)
        (fboundp 'denote)
        (fboundp 'denote-directory-files)
        (bound-and-true-p denote-directory)))
 
-(defun excerpt-note--find-denote-note (source-file)
+(defun passages--find-denote-note (source-file)
   "Find existing denote note for SOURCE-FILE."
-  (when (excerpt-note--denote-available-p)
+  (when (passages--denote-available-p)
     (let* ((source-normalized (expand-file-name source-file))
            (source-name (file-name-nondirectory source-file))
            (excerpt-files (denote-directory-files
-                          (concat "_" excerpt-note-denote-keyword))))
+                          (concat "_" passages-denote-keyword))))
       (catch 'found
         (dolist (note-file excerpt-files)
           (with-temp-buffer
@@ -232,20 +232,20 @@ merge text, handling Drop Caps and mixed font sizes correctly."
             (when-let* ((_ (re-search-forward
                            "^#\\+SOURCE_FILE:[ \t]*\\(.+\\)$" nil t))
                         (stored-path (string-trim (match-string 1)))
-                        (resolved-path (excerpt-note--resolve-path stored-path))
+                        (resolved-path (passages--resolve-path stored-path))
                         (_ (or (string= resolved-path source-normalized)
                                (string= (file-name-nondirectory stored-path)
                                        source-name))))
               (message "Using existing denote note: %s"
                       (file-name-nondirectory note-file))
-              (throw 'found (excerpt-note--normalize-path note-file)))))
+              (throw 'found (passages--normalize-path note-file)))))
         nil))))
 
-(defun excerpt-note--create-denote-note (source-file)
+(defun passages--create-denote-note (source-file)
   "Create a new denote note for SOURCE-FILE."
-  (when (excerpt-note--denote-available-p)
+  (when (passages--denote-available-p)
     (let* ((title (concat "Notes: " (file-name-nondirectory source-file)))
-           (keywords (list excerpt-note-denote-keyword))
+           (keywords (list passages-denote-keyword))
            (subdirectory nil)
            ;; Temporarily prevent denote from opening the new file
            ;; This avoids disrupting the current window/buffer
@@ -267,16 +267,16 @@ merge text, handling Drop Caps and mixed font sizes correctly."
                      (looking-at "^#\\+"))
             (forward-line 1))
           (insert "#+SOURCE_FILE: "
-                 (excerpt-note--make-relative-path source-file)
+                 (passages--make-relative-path source-file)
                  "\n\n")
           (save-buffer)))
 
       (message "Created denote note: %s" (file-name-nondirectory note-file))
-      (excerpt-note--normalize-path note-file))))
+      (passages--normalize-path note-file))))
 
 ;;; Anchor utilities
 
-(defun excerpt-note--get-location-page (location)
+(defun passages--get-location-page (location)
   "Get page/chapter from LOCATION."
   (cond
    ((numberp location) location)
@@ -286,7 +286,7 @@ merge text, handling Drop Caps and mixed font sizes correctly."
       (string-to-number (match-string 1 location))))
    (t 0)))
 
-(defun excerpt-note--get-location-top (location)
+(defun passages--get-location-top (location)
   "Get vertical position from LOCATION."
   (cond
    ((numberp location) 0)
@@ -296,14 +296,14 @@ merge text, handling Drop Caps and mixed font sizes correctly."
       (cdr location)))
    (t 0)))
 
-(defun excerpt-note--get-location-left (location)
+(defun passages--get-location-left (location)
   "Get horizontal position from LOCATION."
   (when (and (consp location) (consp (cdr location)))
     (cddr location)))
 
 ;;; Path utilities
 
-(defun excerpt-note--get-project-root ()
+(defun passages--get-project-root ()
   "Get project root directory if available."
   (or (and (fboundp 'projectile-project-root)
            (ignore-errors (projectile-project-root)))
@@ -314,24 +314,24 @@ merge text, handling Drop Caps and mixed font sizes correctly."
                (car (project-roots proj)))))
       default-directory))
 
-(defun excerpt-note--normalize-path (path)
+(defun passages--normalize-path (path)
   "Normalize PATH to canonical absolute path."
   (expand-file-name path))
 
-(defun excerpt-note--make-relative-path (absolute-path)
+(defun passages--make-relative-path (absolute-path)
   "Convert ABSOLUTE-PATH to relative path if possible."
-  (let ((project-root (when excerpt-note-use-relative-paths
-                        (excerpt-note--get-project-root))))
+  (let ((project-root (when passages-use-relative-paths
+                        (passages--get-project-root))))
     (if (and project-root (string-prefix-p project-root absolute-path))
         (file-relative-name absolute-path project-root)
       absolute-path)))
 
-(defun excerpt-note--find-file-in-search-paths (filename)
+(defun passages--find-file-in-search-paths (filename)
   "Search for FILENAME in configured search paths.
 Returns absolute path if found, nil otherwise."
   (catch 'found
     ;; Try configured search paths
-    (dolist (dir excerpt-note-search-paths)
+    (dolist (dir passages-search-paths)
       (let ((expanded-dir (expand-file-name dir)))
         (when (file-directory-p expanded-dir)
           (let ((candidate (expand-file-name filename expanded-dir)))
@@ -346,7 +346,7 @@ Returns absolute path if found, nil otherwise."
             (throw 'found candidate)))))
 
     ;; Try recursive search in project root (slower, last resort)
-    (let ((project-root (excerpt-note--get-project-root)))
+    (let ((project-root (passages--get-project-root)))
       (when (and project-root (file-directory-p project-root))
         (condition-case nil
             (when-let* ((matches (directory-files-recursively
@@ -358,12 +358,12 @@ Returns absolute path if found, nil otherwise."
 
     nil))
 
-(defun excerpt-note--buffer-base-dir ()
+(defun passages--buffer-base-dir ()
   "Get base directory for resolving relative paths."
   (or (and (buffer-file-name) (file-name-directory (buffer-file-name)))
-      (excerpt-note--get-project-root)))
+      (passages--get-project-root)))
 
-(defun excerpt-note--resolve-path (path)
+(defun passages--resolve-path (path)
   "Resolve PATH to absolute path with intelligent search.
 Handles:
 1. Absolute paths - returned as-is
@@ -371,18 +371,18 @@ Handles:
 3. Bare filenames - searched in configured directories"
   (cond
    ((file-name-absolute-p path)
-    (excerpt-note--normalize-path path))
+    (passages--normalize-path path))
    ((string-match-p "/" path)
-    (excerpt-note--normalize-path
-     (expand-file-name path (excerpt-note--buffer-base-dir))))
+    (passages--normalize-path
+     (expand-file-name path (passages--buffer-base-dir))))
    (t
-    (or (excerpt-note--find-file-in-search-paths path)
-        (excerpt-note--normalize-path
-         (expand-file-name path (excerpt-note--buffer-base-dir)))))))
+    (or (passages--find-file-in-search-paths path)
+        (passages--normalize-path
+         (expand-file-name path (passages--buffer-base-dir)))))))
 
 ;;; PDF functions
 
-(defun excerpt-note--compute-bounding-box (edge-lists)
+(defun passages--compute-bounding-box (edge-lists)
   "Compute bounding box (LEFT TOP RIGHT BOTTOM) from multiple EDGE-LISTS.
 Each element of EDGE-LISTS should be (L T R B)."
   (when edge-lists
@@ -392,7 +392,7 @@ Each element of EDGE-LISTS should be (L T R B)."
           (max-bottom (apply #'max (mapcar (lambda (e) (nth 3 e)) edge-lists))))
       (list min-left min-top max-right max-bottom))))
 
-(defun excerpt-note--pdf-extract-edges (region)
+(defun passages--pdf-extract-edges (region)
   "Extract a single (LEFT TOP RIGHT BOTTOM) edge list from REGION.
 REGION is the return value of `pdf-view-active-region', which may be:
   - ((L T R B) ...)      — list of edge lists (standard)
@@ -406,60 +406,60 @@ When multiple edge lists exist, compute the bounding box of all."
          (numberp (car region))
          (consp (cadr region))
          (numberp (caadr region)))
-    (excerpt-note--compute-bounding-box (cdr region)))
+    (passages--compute-bounding-box (cdr region)))
    ;; ((L T R B) ...) — list of edge lists, compute bounding box
    ((and (consp region)
          (consp (car region))
          (numberp (caar region)))
-    (excerpt-note--compute-bounding-box region))
+    (passages--compute-bounding-box region))
    ;; (L T R B) — flat list of numbers, at least 4 elements
    ((and (consp region)
          (numberp (car region))
          (nthcdr 3 region))
     region)
    (t
-    (when excerpt-note-debug
-      (message "excerpt-note: unexpected pdf-view-active-region format: %S" region))
+    (when passages-debug
+      (message "passages: unexpected pdf-view-active-region format: %S" region))
     nil)))
 
-(defun excerpt-note--pdf-get-precise-location ()
+(defun passages--pdf-get-precise-location ()
   "Get precise location in PDF."
   (let ((page (pdf-view-current-page))
         v-pos h-pos)
     (if-let* ((_ (pdf-view-active-region-p))
-              (edges (excerpt-note--pdf-extract-edges (pdf-view-active-region))))
+              (edges (passages--pdf-extract-edges (pdf-view-active-region))))
         (setq v-pos (min (nth 1 edges) (nth 3 edges))
               h-pos (min (nth 0 edges) (nth 2 edges)))
-      (setq v-pos (excerpt-note--conv-page-scroll-percentage
+      (setq v-pos (passages--conv-page-scroll-percentage
                    (window-vscroll))))
     (if h-pos
         (cons page (cons v-pos h-pos))
       (cons page v-pos))))
 
-(defun excerpt-note--pdf-goto-location (file location)
+(defun passages--pdf-goto-location (file location)
   "Jump to LOCATION in PDF FILE."
-  (let* ((resolved-file (excerpt-note--resolve-path file))
+  (let* ((resolved-file (passages--resolve-path file))
          (existing-buf (find-buffer-visiting resolved-file))
-         (page (excerpt-note--get-location-page location))
-         (v-pos (excerpt-note--get-location-top location)))
+         (page (passages--get-location-page location))
+         (v-pos (passages--get-location-top location)))
     (if existing-buf
         (pop-to-buffer existing-buf)
       (find-file-other-window resolved-file))
     (pdf-view-goto-page page)
     (when (and (numberp v-pos) (> v-pos 0))
-      (image-scroll-up (- (excerpt-note--conv-page-percentage-scroll v-pos)
+      (image-scroll-up (- (passages--conv-page-percentage-scroll v-pos)
                           (window-vscroll))))))
 
 ;;; EPUB functions
 
-(defun excerpt-note--epub-get-precise-location ()
+(defun passages--epub-get-precise-location ()
   "Get precise location in EPUB."
   (let ((chapter nov-documents-index))
     (if (region-active-p)
         (cons chapter (cons (region-beginning) (region-end)))
       (cons chapter (point)))))
 
-(defun excerpt-note--epub-try-anchor-search (initial-pos anchor-text)
+(defun passages--epub-try-anchor-search (initial-pos anchor-text)
   "Try to locate ANCHOR-TEXT near INITIAL-POS in the current chapter.
 If found within 200 chars, do nothing.  Otherwise search from chapter
 start and reposition point.  Falls back to INITIAL-POS if not found."
@@ -473,21 +473,21 @@ start and reposition point.  Falls back to INITIAL-POS if not found."
       (if (search-forward anchor-text nil t)
           (progn
             (goto-char (match-beginning 0))
-            (when excerpt-note-debug
+            (when passages-debug
               (message "Anchor text found at %d (original pos was %d)"
                        (point) initial-pos)))
         (goto-char initial-pos)
-        (when excerpt-note-debug
+        (when passages-debug
           (message "Anchor text not found, using original position"))))))
 
-(defun excerpt-note--epub-goto-location (file location &optional anchor-text)
+(defun passages--epub-goto-location (file location &optional anchor-text)
   "Jump to LOCATION in EPUB FILE using nov.el native methods.
 If ANCHOR-TEXT is provided and the text at the initial position
 does not match, search forward in the chapter to find it."
-  (let* ((resolved-file (excerpt-note--resolve-path file))
+  (let* ((resolved-file (passages--resolve-path file))
          (existing-buf (find-buffer-visiting resolved-file))
-         (chapter (excerpt-note--get-location-page location))
-         (pos (excerpt-note--get-location-top location)))
+         (chapter (passages--get-location-page location))
+         (pos (passages--get-location-top location)))
     (if existing-buf
         (pop-to-buffer existing-buf)
       (find-file-other-window resolved-file))
@@ -499,44 +499,44 @@ does not match, search forward in the chapter to find it."
     (let ((initial-pos (min (round pos) (point-max))))
       (goto-char initial-pos)
       (when (and anchor-text (> (length anchor-text) 0))
-        (excerpt-note--epub-try-anchor-search initial-pos anchor-text)))
+        (passages--epub-try-anchor-search initial-pos anchor-text)))
     (recenter)))
 
 ;;; Generic functions
 
-(defun excerpt-note--get-current-location ()
+(defun passages--get-current-location ()
   "Get current precise location."
   (cond
    ((eq major-mode 'pdf-view-mode)
     (list :type 'pdf
-          :file (excerpt-note--make-relative-path (buffer-file-name))
-          :location (excerpt-note--pdf-get-precise-location)))
+          :file (passages--make-relative-path (buffer-file-name))
+          :location (passages--pdf-get-precise-location)))
    ((eq major-mode 'nov-mode)
     (list :type 'epub
-          :file (excerpt-note--make-relative-path
+          :file (passages--make-relative-path
                  (or nov-file-name (buffer-file-name)))
-          :location (excerpt-note--epub-get-precise-location)))
+          :location (passages--epub-get-precise-location)))
    (t (user-error "Not in PDF or EPUB buffer"))))
 
-(defun excerpt-note--goto-location (file location type &optional anchor-text)
+(defun passages--goto-location (file location type &optional anchor-text)
   "Jump to LOCATION in FILE of TYPE.
 Optional ANCHOR-TEXT is used for secondary verification in EPUB."
   (cond
    ((eq type 'pdf)
-    (excerpt-note--pdf-goto-location file location))
+    (passages--pdf-goto-location file location))
    ((eq type 'epub)
-    (excerpt-note--epub-goto-location file location anchor-text))
+    (passages--epub-goto-location file location anchor-text))
    (t (error "Unknown type: %s" type))))
 
 ;;; Text extraction
 
-(defun excerpt-note--line-text (line)
+(defun passages--line-text (line)
   "Get text content of LINE plist."
   (plist-get line :text))
 
 ;;; PDF character layout to lines conversion
 
-(defun excerpt-note--chars-to-line (chars)
+(defun passages--chars-to-line (chars)
   "Convert a list of CHARS to a line structure.
 CHARS is a list of (CHAR (LEFT TOP RIGHT BOTTOM)).
 Inserts spaces when there are gaps between characters.
@@ -610,7 +610,7 @@ Handles Drop Caps by not inserting space before following lowercase."
               :width (- max-right min-left)
               :height (- max-bottom min-top))))))
 
-(defun excerpt-note--group-chars-into-lines (chars &optional _threshold)
+(defun passages--group-chars-into-lines (chars &optional _threshold)
   "Group CHARS into lines by clustering Y-center values.
 CHARS is output from `pdf-info-charlayout'.
 Uses Y-center clustering to handle mixed font sizes on same visual line.
@@ -673,7 +673,7 @@ Handles Drop Caps by using Y-top for oversized characters."
              (not (string-empty-p trimmed))))
          raw-lines)))))
 
-(defun excerpt-note--filter-line-by-x-contiguous (line-chars x-min x-max)
+(defun passages--filter-line-by-x-contiguous (line-chars x-min x-max)
   "Filter LINE-CHARS to keep only characters contiguous with X selection.
 Start with characters in X range (X-MIN to X-MAX), then expand
 left and right to include adjacent characters without large gaps.
@@ -737,7 +737,7 @@ This handles multi-column (stops at column gap) and single-column
           ;; Return the contiguous range
           (seq-subseq sorted-chars result-start (1+ result-end)))))))
 
-(defun excerpt-note--get-pdf-lines-in-region (page edges)
+(defun passages--get-pdf-lines-in-region (page edges)
   "Get lines with position info from PAGE within EDGES.
 EDGES is (LEFT TOP RIGHT BOTTOM) in relative coordinates.
 Returns a list of line plists.
@@ -770,36 +770,36 @@ Strategy:
                       (> char-bottom y-min))))
              all-chars))
            ;; Step 2: Group into lines by Y-center
-           (char-groups (excerpt-note--group-chars-into-lines y-filtered-chars))
+           (char-groups (passages--group-chars-into-lines y-filtered-chars))
            ;; Step 3: For each line, filter to contiguous chars around X selection
            (filtered-groups
             (delq nil
                   (mapcar
                    (lambda (line-chars)
-                     (excerpt-note--filter-line-by-x-contiguous
+                     (passages--filter-line-by-x-contiguous
                       line-chars x-min x-max))
                    char-groups)))
            ;; Step 4: Convert to lines
-           (lines (mapcar #'excerpt-note--chars-to-line filtered-groups)))
+           (lines (mapcar #'passages--chars-to-line filtered-groups)))
       ;; Filter out empty lines
       (seq-filter (lambda (line)
                     (and line
                          (not (string-empty-p
-                               (string-trim (excerpt-note--line-text line))))))
+                               (string-trim (passages--line-text line))))))
                   lines))))
 
 ;;; Main text extraction function
 
-(defun excerpt-note--pdf-extract-text (page edges)
+(defun passages--pdf-extract-text (page edges)
   "Extract text from PAGE within EDGES and merge into single paragraph.
 No paragraph detection - just merge all lines with proper spacing.
 Handles Drop Caps and hyphenated words correctly."
-  (let ((lines (excerpt-note--get-pdf-lines-in-region page edges)))
+  (let ((lines (passages--get-pdf-lines-in-region page edges)))
     (when (and lines (> (length lines) 0))
       (let ((result ""))
         (dolist (line lines)
           ;; Get line text, remove any newlines, then trim whitespace
-          (let* ((raw-text (excerpt-note--line-text line))
+          (let* ((raw-text (passages--line-text line))
                  (text (string-trim (replace-regexp-in-string "[\n\r]+" " " raw-text))))
             (cond
              ;; First line
@@ -833,7 +833,7 @@ Handles Drop Caps and hyphenated words correctly."
                   (setq result (concat result " " text)))))))))
         (string-trim result)))))
 
-(defun excerpt-note--normalize-text (text)
+(defun passages--normalize-text (text)
   "Normalize TEXT extracted from EPUB (simple regex-based).
 Used as fallback for PDF when smart detection fails.
 - Preserve paragraph boundaries (double+ newlines)
@@ -859,37 +859,37 @@ Used as fallback for PDF when smart detection fails.
       ;; 7. Trim leading/trailing whitespace
       (string-trim result))))
 
-(defun excerpt-note--get-selected-text ()
+(defun passages--get-selected-text ()
   "Get selected text from PDF/EPUB, normalized.
 For PDFs, uses position-based extraction if enabled."
   (cond
    ((eq major-mode 'pdf-view-mode)
     (if (pdf-view-active-region-p)
         (let* ((page (pdf-view-current-page))
-               (edges (excerpt-note--pdf-extract-edges (pdf-view-active-region)))
+               (edges (passages--pdf-extract-edges (pdf-view-active-region)))
                (extracted-text
-                (when (and excerpt-note-smart-text-extraction edges)
-                  (excerpt-note--pdf-extract-text page edges))))
+                (when (and passages-smart-text-extraction edges)
+                  (passages--pdf-extract-text page edges))))
           (if extracted-text
               extracted-text
             ;; Fallback to simple extraction
-            (excerpt-note--normalize-text
+            (passages--normalize-text
              (car (pdf-view-active-region-text)))))
       (user-error "No text selected in PDF")))
 
    ((eq major-mode 'nov-mode)
     (if (use-region-p)
-        (excerpt-note--normalize-text
+        (passages--normalize-text
          (buffer-substring-no-properties (region-beginning) (region-end)))
       (user-error "No text selected in EPUB")))
 
    (t (user-error "Not in PDF or EPUB buffer"))))
 
-(defun excerpt-note--format-location (location)
+(defun passages--format-location (location)
   "Format LOCATION for storage."
-  (let ((page (excerpt-note--get-location-page location))
-        (v-pos (excerpt-note--get-location-top location))
-        (h-pos (excerpt-note--get-location-left location)))
+  (let ((page (passages--get-location-page location))
+        (v-pos (passages--get-location-top location))
+        (h-pos (passages--get-location-left location)))
     (cond
      ((and h-pos (> h-pos 0))
       (format "(%d %.2f . %.2f)" page v-pos h-pos))
@@ -903,50 +903,53 @@ For PDFs, uses position-based extraction if enabled."
 
 ;;; Find excerpts with org-mode separator
 
-(defun excerpt-note--find-excerpts-in-region (start end)
+(defun passages--find-excerpts-in-region (start end)
   "Find excerpts in region from START to END.
-New format: ● Pxx [content on same line]"
+Format: ● Pxx [content] ⟦file|location⟧"
   (let (excerpts)
     (save-excursion
       (goto-char start)
-      ;; Match: ● P followed by page number and space
-      (while (re-search-forward "^[ \t]*\\(● P\\([0-9]+\\) \\)" end t)
+      ;; Match: ● P followed by page number, content, and metadata
+      (while (re-search-forward
+              "^[ \t]*\\(● P\\([0-9]+\\) \\)\\(.*?\\) ?⟦\\([^|]+\\)|\\([^⟧]+\\)⟧$"
+              end t)
         (let* ((page (string-to-number (match-string 2)))
                (marker-start (match-beginning 1))
-               (marker-end (match-end 1))  ; End of "● Pxx "
-               (body-start (point))  ; Content starts here (same line)
-               (body-end (save-excursion
-                           (end-of-line)
-                           (point)))
-               ;; Get file/location from text properties if available
-               (file (get-text-property marker-start 'excerpt-note-file))
-               (location-str (get-text-property marker-start 'excerpt-note-location)))
+               (marker-end (match-end 1))
+               (body-start (match-beginning 3))
+               (body-end (match-end 3))
+               (file (match-string 4))
+               (location-str (match-string 5))
+               (meta-start (- (match-end 3) (if (eq (char-before (match-end 3)) ?\s) 0 -1))))
 
-          (when excerpt-note-debug
-            (message "Found excerpt: page=%d" page))
+          (when passages-debug
+            (message "Found excerpt: page=%d file=%s loc=%s" page file location-str))
 
           (push (list :marker-start marker-start
                       :marker-end marker-end
                       :page page
-                      :file (or file "")
-                      :location (or location-str "")
+                      :file file
+                      :location location-str
                       :body-start body-start
-                      :body-end body-end)
+                      :body-end body-end
+                      :meta-start (match-beginning 4)
+                      :meta-end (match-end 0))
                 excerpts))))
     (nreverse excerpts)))
 
-(defun excerpt-note--find-all-excerpts ()
+(defun passages--find-all-excerpts ()
   "Find all excerpts in buffer."
-  (excerpt-note--find-excerpts-in-region (point-min) (point-max)))
+  (passages--find-excerpts-in-region (point-min) (point-max)))
 
-(defun excerpt-note--find-excerpts-for-page (page file)
+(defun passages--find-excerpts-for-page (page file)
   "Find all excerpts for PAGE in FILE in current buffer."
   (let ((positions '()))
     (save-excursion
       (goto-char (point-min))
-      (while (re-search-forward (format "^[ \t]*● P%d " page) nil t)
-        ;; Check if file matches via text property
-        (let ((excerpt-file (get-text-property (match-beginning 0) 'excerpt-note-file)))
+      ;; Match: ● Pxx ... ⟦file|location⟧
+      (while (re-search-forward
+              (format "^[ \t]*● P%d .*⟦\\([^|]+\\)|[^⟧]+⟧$" page) nil t)
+        (let ((excerpt-file (match-string 1)))
           (when (or (null file)
                     (null excerpt-file)
                     (string-match-p (regexp-quote (file-name-nondirectory file))
@@ -956,7 +959,7 @@ New format: ● Pxx [content on same line]"
 
 ;;; Optimized overlay system with org separator
 
-(defun excerpt-note--jit-lock-function (start end)
+(defun passages--jit-lock-function (start end)
   "JIT lock function to add overlays incrementally."
   (save-excursion
     (save-restriction
@@ -968,34 +971,36 @@ New format: ● Pxx [content on same line]"
       (end-of-line)
       (setq end (point))
 
-      (remove-overlays start end 'excerpt-note-overlay t)
+      (remove-overlays start end 'passages-overlay t)
 
-      (let ((excerpts (excerpt-note--find-excerpts-in-region start end)))
+      (let ((excerpts (passages--find-excerpts-in-region start end)))
         (dolist (excerpt excerpts)
-          (excerpt-note--add-overlay-for-excerpt excerpt)))
+          (passages--add-overlay-for-excerpt excerpt)))
 
       ;; Style org-mode separators (5+ dashes)
       (save-excursion
         (goto-char start)
         (while (re-search-forward "^[ \t]*-----+[ \t]*$" end t)
           (let ((sep-ov (make-overlay (match-beginning 0) (match-end 0))))
-            (overlay-put sep-ov 'face 'excerpt-note-separator-face)
-            (overlay-put sep-ov 'excerpt-note-overlay t)
+            (overlay-put sep-ov 'face 'passages-separator-face)
+            (overlay-put sep-ov 'passages-overlay t)
             (overlay-put sep-ov 'evaporate t)))))))
 
-(defun excerpt-note--add-overlay-for-excerpt (excerpt)
+(defun passages--add-overlay-for-excerpt (excerpt)
   "Add overlay for a single EXCERPT.
-New format: ● Pxx [content] on same line."
+Format: ● Pxx [content] ⟦file|location⟧"
   (let* ((marker-start (plist-get excerpt :marker-start))
          (marker-end (plist-get excerpt :marker-end))
          (body-start (plist-get excerpt :body-start))
          (body-end (plist-get excerpt :body-end))
+         (meta-start (plist-get excerpt :meta-start))
+         (meta-end (plist-get excerpt :meta-end))
          (page (plist-get excerpt :page))
          (file (plist-get excerpt :file)))
 
     ;; Style the marker part (● Pxx)
     (let ((marker-ov (make-overlay marker-start marker-end)))
-      (overlay-put marker-ov 'face 'excerpt-note-marker-face)
+      (overlay-put marker-ov 'face 'passages-marker-face)
       (overlay-put marker-ov 'mouse-face 'highlight)
       (overlay-put marker-ov 'help-echo "Click or C-c e j to jump to source")
       (overlay-put marker-ov 'keymap
@@ -1003,31 +1008,38 @@ New format: ● Pxx [content] on same line."
                      (define-key map [mouse-1]
                        (lambda (event)
                          (interactive "e")
-                         (excerpt-note-jump-to-source)))
+                         (passages-jump-to-source)))
                      map))
-      (overlay-put marker-ov 'excerpt-note-overlay t)
-      (overlay-put marker-ov 'excerpt-note-file file)
+      (overlay-put marker-ov 'passages-overlay t)
+      (overlay-put marker-ov 'passages-file file)
       (overlay-put marker-ov 'evaporate t))
 
     ;; Style the content part (gray)
     (when (and body-start body-end (< body-start body-end))
       (let ((body-ov (make-overlay body-start body-end)))
-        (overlay-put body-ov 'face 'excerpt-note-content-face)
-        (overlay-put body-ov 'excerpt-note-overlay t)
-        (overlay-put body-ov 'excerpt-note-file file)
+        (overlay-put body-ov 'face 'passages-content-face)
+        (overlay-put body-ov 'passages-overlay t)
+        (overlay-put body-ov 'passages-file file)
         (overlay-put body-ov 'evaporate t)
         (overlay-put body-ov 'help-echo
-                     (format "Excerpt from page %d" page))))))
+                     (format "Passage from page %d" page))))
 
-(defun excerpt-note--add-overlays ()
+    ;; Hide the metadata part ⟦file|location⟧
+    (when (and meta-start meta-end)
+      (let ((meta-ov (make-overlay (1- meta-start) meta-end)))
+        (overlay-put meta-ov 'invisible t)
+        (overlay-put meta-ov 'passages-overlay t)
+        (overlay-put meta-ov 'evaporate t)))))
+
+(defun passages--add-overlays ()
   "Add overlays to all excerpts."
   (interactive)
-  (excerpt-note--remove-overlays)
-  (let ((excerpts (excerpt-note--find-all-excerpts))
+  (passages--remove-overlays)
+  (let ((excerpts (passages--find-all-excerpts))
         (count 0))
 
     (dolist (excerpt excerpts)
-      (excerpt-note--add-overlay-for-excerpt excerpt)
+      (passages--add-overlay-for-excerpt excerpt)
       (setq count (1+ count)))
 
     ;; Style org-mode separators (5+ dashes)
@@ -1035,28 +1047,28 @@ New format: ● Pxx [content] on same line."
       (goto-char (point-min))
       (while (re-search-forward "^[ \t]*-----+[ \t]*$" nil t)
         (let ((sep-ov (make-overlay (match-beginning 0) (match-end 0))))
-          (overlay-put sep-ov 'face 'excerpt-note-separator-face)
-          (overlay-put sep-ov 'excerpt-note-overlay t)
+          (overlay-put sep-ov 'face 'passages-separator-face)
+          (overlay-put sep-ov 'passages-overlay t)
           (overlay-put sep-ov 'evaporate t))))
 
-    (when excerpt-note-debug
-      (message "Added %d styled excerpt cards" count))
+    (when passages-debug
+      (message "Added %d styled passage cards" count))
     count))
 
-(defun excerpt-note--remove-overlays ()
+(defun passages--remove-overlays ()
   "Remove all excerpt overlays."
   (interactive)
-  (remove-overlays (point-min) (point-max) 'excerpt-note-overlay t))
+  (remove-overlays (point-min) (point-max) 'passages-overlay t))
 
-(defun excerpt-note--refresh-overlays ()
+(defun passages--refresh-overlays ()
   "Refresh all overlays."
   (interactive)
   (when (and (buffer-live-p (current-buffer))
              (derived-mode-p 'org-mode))
-    (excerpt-note--remove-overlays)
-    (excerpt-note--add-overlays)))
+    (passages--remove-overlays)
+    (passages--add-overlays)))
 
-(defun excerpt-note--ensure-overlays-at-point ()
+(defun passages--ensure-overlays-at-point ()
   "Ensure overlays are rendered around point."
   (when (and (fboundp 'jit-lock-fontify-now)
              (get-buffer-window))
@@ -1074,28 +1086,28 @@ New format: ● Pxx [content] on same line."
 
 ;;; Note file management
 
-(defun excerpt-note--get-note-file-path (source-file)
+(defun passages--get-note-file-path (source-file)
   "Determine the path for note file of SOURCE-FILE."
-  (let ((normalized-source (excerpt-note--normalize-path source-file)))
+  (let ((normalized-source (passages--normalize-path source-file)))
     (or
-     (excerpt-note--find-citar-note normalized-source)
+     (passages--find-citar-note normalized-source)
 
-     (when (excerpt-note--denote-available-p)
-       (or (excerpt-note--find-denote-note normalized-source)
-           (excerpt-note--create-denote-note normalized-source)))
+     (when (passages--denote-available-p)
+       (or (passages--find-denote-note normalized-source)
+           (passages--create-denote-note normalized-source)))
 
-     (when excerpt-note-directory
-       (unless (file-directory-p excerpt-note-directory)
-         (make-directory excerpt-note-directory t))
-       (excerpt-note--normalize-path
+     (when passages-directory
+       (unless (file-directory-p passages-directory)
+         (make-directory passages-directory t))
+       (passages--normalize-path
         (expand-file-name
          (concat (file-name-base normalized-source) ".notes.org")
-         excerpt-note-directory)))
+         passages-directory)))
 
-     (excerpt-note--normalize-path
+     (passages--normalize-path
       (concat normalized-source ".notes.org")))))
 
-(defun excerpt-note--ensure-file-header (buffer source-file)
+(defun passages--ensure-file-header (buffer source-file)
   "Ensure BUFFER has proper header."
   (with-current-buffer buffer
     (save-excursion
@@ -1104,41 +1116,41 @@ New format: ● Pxx [content] on same line."
         (insert "#+TITLE: Notes for " (file-name-nondirectory source-file) "\n")
         (insert "#+SOURCE_FILE: " source-file "\n\n")))))
 
-(defun excerpt-note--get-note-buffer (source-file)
+(defun passages--get-note-buffer (source-file)
   "Get or create note buffer for SOURCE-FILE."
-  (let* ((note-file (excerpt-note--get-note-file-path source-file))
+  (let* ((note-file (passages--get-note-file-path source-file))
          (buf (or (find-buffer-visiting note-file)
                   (find-file-noselect note-file))))
     (with-current-buffer buf
       (unless (derived-mode-p 'org-mode)
         (org-mode))
-      (unless (and (excerpt-note--denote-available-p)
+      (unless (and (passages--denote-available-p)
                    (string-match-p (regexp-quote (expand-file-name denote-directory))
                                   (expand-file-name note-file)))
-        (excerpt-note--ensure-file-header buf source-file))
-      (when excerpt-note-auto-parse
-        (excerpt-note-mode 1)))
+        (passages--ensure-file-header buf source-file))
+      (when passages-auto-parse
+        (passages-mode 1)))
     buf))
 
 ;;; Ordered insertion support
 
-(defun excerpt-note--compare-locations-pdf (loc-a loc-b)
+(defun passages--compare-locations-pdf (loc-a loc-b)
   "Compare two PDF locations LOC-A and LOC-B.
 Returns negative if A comes before B, zero if same position,
 positive if A comes after B.  Compares page first, then vertical
 position with a tolerance of 0.001."
-  (let ((page-a (excerpt-note--get-location-page loc-a))
-        (page-b (excerpt-note--get-location-page loc-b))
-        (vpos-a (float (excerpt-note--get-location-top loc-a)))
-        (vpos-b (float (excerpt-note--get-location-top loc-b))))
+  (let ((page-a (passages--get-location-page loc-a))
+        (page-b (passages--get-location-page loc-b))
+        (vpos-a (float (passages--get-location-top loc-a)))
+        (vpos-b (float (passages--get-location-top loc-b))))
     (cond
      ((/= page-a page-b) (- page-a page-b))
      ((< (abs (- vpos-a vpos-b)) 0.001) 0)
      (t (if (< vpos-a vpos-b) -1 1)))))
 
-(defun excerpt-note--extract-anchor-from-excerpt (excerpt)
+(defun passages--extract-anchor-from-excerpt (excerpt)
   "Extract first 30 characters of body text from EXCERPT plist.
-EXCERPT is a plist as returned by `excerpt-note--find-excerpts-in-region'."
+EXCERPT is a plist as returned by `passages--find-excerpts-in-region'."
   (let* ((body-start (plist-get excerpt :body-start))
          (body-end (plist-get excerpt :body-end))
          (raw (buffer-substring-no-properties
@@ -1147,7 +1159,7 @@ EXCERPT is a plist as returned by `excerpt-note--find-excerpts-in-region'."
     (when (> (length body-text) 0)
       (substring body-text 0 (min 30 (length body-text))))))
 
-(defun excerpt-note--insertion-pos-before-excerpt (excerpt)
+(defun passages--insertion-pos-before-excerpt (excerpt)
   "Find the start of the note area before EXCERPT.
 Searches backward from the marker for the nearest boundary
 \(separator, heading, or header keyword) and returns the position
@@ -1166,7 +1178,7 @@ just after that boundary and any trailing blank lines."
             (point))
         marker-start))))
 
-(defun excerpt-note--find-insertion-point (loc-info new-text)
+(defun passages--find-insertion-point (loc-info new-text)
   "Find the buffer position where a new excerpt should be inserted.
 LOC-INFO is the plist (:type :file :location) for the new excerpt.
 NEW-TEXT is the excerpt body text (used for EPUB anchor comparison).
@@ -1176,7 +1188,7 @@ existing excerpt sorts after the new one."
          (new-file (plist-get loc-info :file))
          (new-location (plist-get loc-info :location))
          (new-file-name (file-name-nondirectory new-file))
-         (excerpts (excerpt-note--find-all-excerpts))
+         (excerpts (passages--find-all-excerpts))
          (same-file-excerpts
           (seq-filter
            (lambda (exc)
@@ -1205,22 +1217,22 @@ existing excerpt sorts after the new one."
         (catch 'found
           (dolist (exc same-file-excerpts)
             (let* ((exc-loc-str (plist-get exc :location))
-                   (exc-location (excerpt-note--parse-location-string exc-loc-str))
+                   (exc-location (passages--parse-location-string exc-loc-str))
                    (cmp
                     (cond
                      ;; PDF: compare (page, vpos)
                      ((eq new-type 'pdf)
-                      (excerpt-note--compare-locations-pdf
+                      (passages--compare-locations-pdf
                        new-location exc-location))
                      ;; EPUB: compare chapter first, then stored position
                      ((eq new-type 'epub)
-                      (let ((new-ch (excerpt-note--get-location-page new-location))
-                            (exc-ch (excerpt-note--get-location-page exc-location)))
+                      (let ((new-ch (passages--get-location-page new-location))
+                            (exc-ch (passages--get-location-page exc-location)))
                         (if (/= new-ch exc-ch)
                             (- new-ch exc-ch)
                           ;; Same chapter — compare by stored buffer position
-                          (let ((new-pos (excerpt-note--get-location-top new-location))
-                                (exc-pos (excerpt-note--get-location-top exc-location)))
+                          (let ((new-pos (passages--get-location-top new-location))
+                                (exc-pos (passages--get-location-top exc-location)))
                             (if (and (numberp new-pos) (numberp exc-pos))
                                 (- new-pos exc-pos)
                               ;; Fall back to anchor text comparison if positions unavailable
@@ -1230,7 +1242,7 @@ existing excerpt sorts after the new one."
                                              (boundp 'nov-documents-index)
                                              (= nov-documents-index new-ch))
                                         (let* ((exc-anchor
-                                                (excerpt-note--extract-anchor-from-excerpt exc))
+                                                (passages--extract-anchor-from-excerpt exc))
                                                (pos-a (and new-anchor
                                                            (save-excursion
                                                              (goto-char (point-min))
@@ -1250,22 +1262,22 @@ existing excerpt sorts after the new one."
                 (setq insertion-excerpt exc)
                 (throw 'found t)))))
         (if insertion-excerpt
-            (excerpt-note--insertion-pos-before-excerpt insertion-excerpt)
+            (passages--insertion-pos-before-excerpt insertion-excerpt)
           (point-max))))))
 
 ;;; Duplicate detection
 
-(defcustom excerpt-note-duplicate-anchor-length 40
+(defcustom passages-duplicate-anchor-length 40
   "Number of characters to use as anchor for duplicate detection."
   :type 'integer
-  :group 'excerpt-note)
+  :group 'passages)
 
-(defun excerpt-note--find-duplicate (text note-buffer)
+(defun passages--find-duplicate (text note-buffer)
   "Check if TEXT already exists in NOTE-BUFFER.
 Returns (PAGE . PREVIEW) if duplicate found, nil otherwise."
   (when (and text (> (length text) 10))
     (let* ((anchor (substring (string-trim text)
-                              0 (min excerpt-note-duplicate-anchor-length
+                              0 (min passages-duplicate-anchor-length
                                      (length (string-trim text))))))
       (with-current-buffer note-buffer
         (save-excursion
@@ -1291,19 +1303,20 @@ Returns (PAGE . PREVIEW) if duplicate found, nil otherwise."
 
 ;;; Excerpt insertion with org separator
 
-(defun excerpt-note--do-insert (text loc-info)
+(defun passages--do-insert (text loc-info)
   "Internal function to insert excerpt with TEXT and LOC-INFO.
 Structure:
-  ● Pxx [excerpt content]
-  [user notes below]"
+  ● Pxx [excerpt content] ⟦file|location⟧
+  [user notes below]
+The ⟦...⟧ metadata is hidden by overlay but persists in the file."
   (let* ((location (plist-get loc-info :location))
          (file (plist-get loc-info :file))
          (type (plist-get loc-info :type))
-         (page (excerpt-note--get-location-page location))
-         (formatted-location (excerpt-note--format-location location))
+         (page (passages--get-location-page location))
+         (formatted-location (passages--format-location location))
          (source-window (selected-window))
          (source-buffer (current-buffer))
-         (note-buffer (excerpt-note--get-note-buffer file))
+         (note-buffer (passages--get-note-buffer file))
          note-position)
 
     ;; Restore source buffer to source window in case it was changed
@@ -1315,51 +1328,40 @@ Structure:
                    '((display-buffer-use-some-window
                       display-buffer-pop-up-window)
                      (inhibit-same-window . t)))
-    (goto-char (excerpt-note--find-insertion-point loc-info text))
+    (goto-char (passages--find-insertion-point loc-info text))
 
     (unless (looking-back "\n\n" 2)
       (if (looking-back "\n" 1)
           (insert "\n")
         (insert "\n\n")))
 
-    ;; 1. Marker + content on same line: ● Pxx [content]
+    ;; 1. Marker: ● Pxx
     (let ((marker-start (point)))
-      (insert (format "● P%d " page))
-      (add-text-properties marker-start (point)
-                          `(excerpt-note-marker t
-                            excerpt-note-page ,page
-                            excerpt-note-file ,file
-                            excerpt-note-type ,type
-                            excerpt-note-location ,formatted-location)))
+      (insert (format "● P%d " page)))
 
-    ;; 2. Excerpt content (on same line)
-    (let ((content-start (point)))
-      (when text
-        (insert text))
-      (insert "\n")
-      (add-text-properties content-start (point)
-                          `(excerpt-note-content t
-                            excerpt-note-page ,page
-                            excerpt-note-file ,file
-                            excerpt-note-type ,type
-                            excerpt-note-location ,formatted-location)))
+    ;; 2. Excerpt content
+    (when text
+      (insert text))
 
-    ;; 3. User notes area (empty line below for user to fill)
+    ;; 3. Metadata suffix: ⟦file|location⟧ (will be hidden by overlay)
+    (insert (format " ⟦%s|%s⟧\n" file formatted-location))
+
+    ;; 4. User notes area (empty line below for user to fill)
     (setq note-position (point))
     (insert "\n")
 
     ;; Position cursor at notes area for immediate editing
     (goto-char note-position)
 
-    (when excerpt-note-mode
-      (run-with-idle-timer 0.1 nil 'excerpt-note--refresh-overlays))
+    (when passages-mode
+      (run-with-idle-timer 0.1 nil 'passages--refresh-overlays))
 
     (if text
-        (message "✓ Excerpt from p.%d inserted. Add notes below." page)
+        (message "✓ Passage from p.%d inserted. Add notes below." page)
       (message "✓ Empty anchor at p.%d created. Add notes below." page))))
 
 ;;;###autoload
-(defun excerpt-note-insert ()
+(defun passages-insert ()
   "Insert excerpt, checking for duplicates first."
   (interactive)
   (let* ((has-selection (cond
@@ -1369,31 +1371,31 @@ Structure:
                           (use-region-p))
                          (t nil)))
          (text (when has-selection
-                 (excerpt-note--get-selected-text)))
-         (loc-info (excerpt-note--get-current-location))
+                 (passages--get-selected-text)))
+         (loc-info (passages--get-current-location))
          (file (plist-get loc-info :file))
-         (note-buffer (excerpt-note--get-note-buffer file)))
+         (note-buffer (passages--get-note-buffer file)))
 
     (cond
      (has-selection
       ;; Check for duplicate
-      (let ((duplicate (excerpt-note--find-duplicate text note-buffer)))
+      (let ((duplicate (passages--find-duplicate text note-buffer)))
         (if duplicate
             (if (y-or-n-p
-                 (format "Similar excerpt exists at p.%d: \"%.40s...\" Insert anyway? "
+                 (format "Similar passage exists at p.%d: \"%.40s...\" Insert anyway? "
                          (car duplicate)
                          (cdr duplicate)))
-                (excerpt-note--do-insert text loc-info)
+                (passages--do-insert text loc-info)
               (message "Insertion cancelled"))
-          (excerpt-note--do-insert text loc-info))))
+          (passages--do-insert text loc-info))))
      ((y-or-n-p "No text selected. Create an empty anchor for this page? ")
-      (excerpt-note--do-insert nil loc-info))
+      (passages--do-insert nil loc-info))
      (t
       (message "Action cancelled")))))
 
 ;;; Find notes for current location
 
-(defun excerpt-note--format-excerpt-choice (pos page)
+(defun passages--format-excerpt-choice (pos page)
   "Format excerpt at POS as a (LABEL . POS) cons for `completing-read'.
 PAGE is the page number used in the label."
   (save-excursion
@@ -1414,61 +1416,61 @@ PAGE is the page number used in the label."
       (cons (format "p.%d: %s" page preview) pos))))
 
 ;;;###autoload
-(defun excerpt-note-find-this-location-in-notes ()
+(defun passages-find-this-location-in-notes ()
   "Find and jump to notes for current location in PDF/EPUB."
   (interactive)
   (unless (memq major-mode '(pdf-view-mode nov-mode))
     (user-error "Not in PDF or EPUB buffer"))
 
-  (let* ((loc-info (excerpt-note--get-current-location))
+  (let* ((loc-info (passages--get-current-location))
          (file (plist-get loc-info :file))
          (location (plist-get loc-info :location))
-         (page (excerpt-note--get-location-page location))
-         (note-buffer (excerpt-note--get-note-buffer file)))
+         (page (passages--get-location-page location))
+         (note-buffer (passages--get-note-buffer file)))
 
     (pop-to-buffer note-buffer
                    '((display-buffer-use-some-window
                       display-buffer-pop-up-window)
                      (inhibit-same-window . t)))
 
-    (unless excerpt-note-mode
-      (excerpt-note-mode 1))
+    (unless passages-mode
+      (passages-mode 1))
 
-    (let ((positions (excerpt-note--find-excerpts-for-page page file)))
+    (let ((positions (passages--find-excerpts-for-page page file)))
       (cond
        ((null positions)
-        (message "No excerpts found for page %d. Press 'e' to create one" page))
+        (message "No passages found for page %d. Press 'e' to create one" page))
 
        ((= (length positions) 1)
         (goto-char (car positions))
-        (excerpt-note--ensure-overlays-at-point)
+        (passages--ensure-overlays-at-point)
         (recenter)
-        (message "✓ Found excerpt for page %d" page))
+        (message "✓ Found passage for page %d" page))
 
        (t
         (let* ((choices (mapcar (lambda (pos)
-                                 (excerpt-note--format-excerpt-choice pos page))
+                                 (passages--format-excerpt-choice pos page))
                                positions))
                (choice (completing-read
-                       (format "Found %d excerpts for page %d. Choose: "
+                       (format "Found %d passages for page %d. Choose: "
                                (length positions) page)
                        choices nil t)))
           (goto-char (cdr (assoc choice choices)))
-          (excerpt-note--ensure-overlays-at-point)
+          (passages--ensure-overlays-at-point)
           (recenter)
-          (message "✓ Jumped to excerpt")))))))
+          (message "✓ Jumped to passage")))))))
 
 ;;;###autoload
-(defun excerpt-note-find-region-in-notes ()
+(defun passages-find-region-in-notes ()
   "Find notes containing the selected text."
   (interactive)
   (unless (memq major-mode '(pdf-view-mode nov-mode))
     (user-error "Not in PDF or EPUB buffer"))
 
-  (let* ((text (excerpt-note--get-selected-text))
-         (loc-info (excerpt-note--get-current-location))
+  (let* ((text (passages--get-selected-text))
+         (loc-info (passages--get-current-location))
          (file (plist-get loc-info :file))
-         (note-buffer (excerpt-note--get-note-buffer file))
+         (note-buffer (passages--get-note-buffer file))
          (search-text (substring text 0 (min 40 (length text)))))
 
     (pop-to-buffer note-buffer
@@ -1476,21 +1478,21 @@ PAGE is the page number used in the label."
                       display-buffer-pop-up-window)
                      (inhibit-same-window . t)))
 
-    (unless excerpt-note-mode
-      (excerpt-note-mode 1))
+    (unless passages-mode
+      (passages-mode 1))
 
     (goto-char (point-min))
     (if (search-forward search-text nil t)
         (progn
           (re-search-backward "^[ \t]*● P" nil t)
-          (excerpt-note--ensure-overlays-at-point)
+          (passages--ensure-overlays-at-point)
           (recenter)
-          (message "✓ Found excerpt containing selected text"))
-      (message "Selected text not found in notes. Press 'e' to create excerpt"))))
+          (message "✓ Found passage containing selected text"))
+      (message "Selected text not found in notes. Press 'e' to create passage"))))
 
 ;;; Jump to source
 
-(defun excerpt-note--find-marker-for-point ()
+(defun passages--find-marker-for-point ()
   "Find the ● P marker position for the excerpt unit containing point.
 Returns the position of the marker line, or nil if not found."
   (save-excursion
@@ -1517,78 +1519,78 @@ Returns the position of the marker line, or nil if not found."
           (beginning-of-line)
           (point)))))))
 
-(defun excerpt-note--parse-marker-line-at-point ()
+(defun passages--parse-marker-line-at-point ()
   "Parse excerpt marker line at or near point.
-New format: ● Pxx [content], with file/location in text properties."
+Format: ● Pxx [content] ⟦file|location⟧"
   (save-excursion
-    (when-let* ((marker-pos (excerpt-note--find-marker-for-point)))
+    (when-let* ((marker-pos (passages--find-marker-for-point)))
       (goto-char marker-pos)
-      (when (looking-at "^[ \t]*● P\\([0-9]+\\) ")
+      ;; Match the full line format with metadata
+      (when (looking-at "^[ \t]*● P\\([0-9]+\\) .*⟦\\([^|]+\\)|\\([^⟧]+\\)⟧$")
         (let* ((page (string-to-number (match-string 1)))
-               (file (get-text-property marker-pos 'excerpt-note-file))
-               (location-str (get-text-property marker-pos 'excerpt-note-location))
-               (type (or (get-text-property marker-pos 'excerpt-note-type)
-                         (if (and file (string-match-p "\\.epub$" file)) 'epub 'pdf))))
+               (file (match-string 2))
+               (location-str (match-string 3))
+               (type (if (and file (string-match-p "\\.epub$" file)) 'epub 'pdf)))
           (list :page page
-                :file (or file "")
-                :location (or location-str "")
+                :file file
+                :location location-str
                 :type type))))))
 
-(defun excerpt-note--find-file-property-nearby (pos)
-  "Find excerpt-note-file text property at or near POS on the same line.
+(defun passages--find-file-property-nearby (pos)
+  "Find passages-file text property at or near POS on the same line.
 Returns (FILE . FOUND-POS) or nil."
   (or
    ;; Direct hit at pos
-   (when-let* ((file (get-text-property pos 'excerpt-note-file)))
+   (when-let* ((file (get-text-property pos 'passages-file)))
      (cons file pos))
    ;; Previous property boundary on the same line
    (save-excursion
      (goto-char pos)
      (when-let* ((prev-pos (previous-single-property-change
-                            pos 'excerpt-note-file nil (line-beginning-position)))
-                 (file (get-text-property prev-pos 'excerpt-note-file)))
+                            pos 'passages-file nil (line-beginning-position)))
+                 (file (get-text-property prev-pos 'passages-file)))
        (cons file prev-pos)))
    ;; Next property boundary on the same line
    (save-excursion
      (goto-char pos)
      (when-let* ((next-pos (next-single-property-change
-                            pos 'excerpt-note-file nil (line-end-position)))
-                 (file (get-text-property next-pos 'excerpt-note-file)))
+                            pos 'passages-file nil (line-end-position)))
+                 (file (get-text-property next-pos 'passages-file)))
        (cons file next-pos)))
    ;; Overlays
    (let ((result nil))
      (dolist (ov (overlays-at pos) result)
-       (when-let* ((file (overlay-get ov 'excerpt-note-file)))
+       (when-let* ((file (overlay-get ov 'passages-file)))
          (setq result (cons file pos)))))))
 
-(defun excerpt-note--get-excerpt-properties-at-point (&optional pos)
+(defun passages--get-excerpt-properties-at-point (&optional pos)
   "Get excerpt properties at POS."
   (let* ((pos (or pos (point)))
-         (found (excerpt-note--find-file-property-nearby pos))
+         (found (passages--find-file-property-nearby pos))
          (props (when-let* ((file (car found))
                             (fpos (cdr found)))
                   (list :file file
-                        :location (get-text-property fpos 'excerpt-note-location)
-                        :page (get-text-property fpos 'excerpt-note-page)
-                        :type (get-text-property fpos 'excerpt-note-type)))))
+                        :location (get-text-property fpos 'passages-location)
+                        :page (get-text-property fpos 'passages-page)
+                        :type (get-text-property fpos 'passages-type)))))
     (if (and props (plist-get props :page))
         props
-      (excerpt-note--parse-marker-line-at-point))))
+      (passages--parse-marker-line-at-point))))
 
-(defun excerpt-note--extract-anchor-text-at-point ()
+(defun passages--extract-anchor-text-at-point ()
   "Extract the first 30 characters of the excerpt body at point.
 Used as anchor text for EPUB secondary location verification.
-New format: content is on same line after ● Pxx."
+New format: content is on same line after ● Pxx, before ⟦file|location⟧."
   (save-excursion
-    (when-let* ((marker-pos (excerpt-note--find-marker-for-point)))
+    (when-let* ((marker-pos (passages--find-marker-for-point)))
       (goto-char marker-pos)
-      ;; New format: ● Pxx [content on same line]
-      (when (looking-at "^[ \t]*● P[0-9]+ \\(.*\\)$")
+      ;; New format: ● Pxx [content] ⟦file|location⟧
+      (when (looking-at "^[ \t]*● P[0-9]+ \\(.*?\\) ?⟦[^⟧]+⟧$")
         (let ((body-text (string-trim (match-string 1))))
           (when (> (length body-text) 0)
             (substring body-text 0 (min 30 (length body-text)))))))))
 
-(defun excerpt-note--parse-location-string (location-str)
+(defun passages--parse-location-string (location-str)
   "Parse LOCATION-STR into a Lisp value (number or cons cell).
 Returns the parsed value, or LOCATION-STR unchanged on failure."
   (condition-case nil
@@ -1598,14 +1600,14 @@ Returns the parsed value, or LOCATION-STR unchanged on failure."
           location-str))
     (error location-str)))
 
-(defun excerpt-note-jump-to-source ()
+(defun passages-jump-to-source ()
   "Jump to source location of excerpt at point."
   (interactive)
   (when (fboundp 'jit-lock-fontify-now)
     (jit-lock-fontify-now (line-beginning-position) (line-end-position)))
-  (let ((props (excerpt-note--get-excerpt-properties-at-point)))
+  (let ((props (passages--get-excerpt-properties-at-point)))
     (unless props
-      (user-error "Not in an excerpt. Move cursor to gray text or marker line"))
+      (user-error "Not in a passage. Move cursor to gray text or marker line"))
     (let* ((file (or (plist-get props :file)
                      (user-error "Could not determine source file")))
            (page (or (plist-get props :page)
@@ -1614,21 +1616,21 @@ Returns the parsed value, or LOCATION-STR unchanged on failure."
                              (user-error "Could not determine location")))
            (type (or (plist-get props :type)
                      (if (string-match-p "\\.epub$" file) 'epub 'pdf)))
-           (location (excerpt-note--parse-location-string location-str))
-           (anchor-text (excerpt-note--extract-anchor-text-at-point)))
-      (when excerpt-note-debug
+           (location (passages--parse-location-string location-str))
+           (anchor-text (passages--extract-anchor-text-at-point)))
+      (when passages-debug
         (message "Jumping to: %s" file)
         (message "  Page: %d" page)
         (message "  Type: %s" type)
         (message "  Location: %s" location-str)
         (when anchor-text
           (message "  Anchor: %s" anchor-text)))
-      (let ((resolved-file (excerpt-note--resolve-path file)))
+      (let ((resolved-file (passages--resolve-path file)))
         (unless (file-exists-p resolved-file)
           (user-error "Source file not found: %s" resolved-file)))
       (condition-case err
           (progn
-            (excerpt-note--goto-location file location type anchor-text)
+            (passages--goto-location file location type anchor-text)
             (message "✓ Jumped to %s p.%d" (file-name-nondirectory file) page))
         (error
          (message "Error jumping to source: %s" (error-message-string err))
@@ -1636,7 +1638,7 @@ Returns the parsed value, or LOCATION-STR unchanged on failure."
 
 ;;; Excerpt management
 
-(defun excerpt-note--excerpt-region-at-point ()
+(defun passages--excerpt-region-at-point ()
   "Return (BEG END MARKER-POS) of the full excerpt unit at point, or nil.
 An excerpt unit is: ● Pxx [content] + [user notes below]."
   (save-excursion
@@ -1666,7 +1668,7 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
       (when marker-pos
         (goto-char marker-pos)
         (let* ((region-start
-                (excerpt-note--insertion-pos-before-excerpt
+                (passages--insertion-pos-before-excerpt
                  (list :marker-start marker-pos)))
                (region-end
                 (save-excursion
@@ -1682,14 +1684,14 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
           (list region-start region-end marker-pos))))))
 
 ;;;###autoload
-(defun excerpt-note-delete-at-point ()
+(defun passages-delete-at-point ()
   "Delete the excerpt at point, including user notes, marker, body, and separator."
   (interactive)
   (unless (derived-mode-p 'org-mode)
     (user-error "Must be in org-mode buffer"))
-  (let ((region (excerpt-note--excerpt-region-at-point)))
+  (let ((region (passages--excerpt-region-at-point)))
     (unless region
-      (user-error "No excerpt found at point"))
+      (user-error "No passage found at point"))
     (let* ((region-start (nth 0 region))
            (region-end (nth 1 region))
            (marker-pos (nth 2 region))
@@ -1700,7 +1702,7 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
                        (buffer-substring-no-properties
                         (point)
                         (min (+ (point) 60) (line-end-position)))))))
-      (when (y-or-n-p (format "Delete excerpt: \"%s...\"? " preview))
+      (when (y-or-n-p (format "Delete passage: \"%s...\"? " preview))
         ;; Expand region-start to include blank lines before notes area
         (save-excursion
           (goto-char region-start)
@@ -1710,7 +1712,7 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
                         (looking-at "^[ \t]*$")))
             (forward-line -1)
             (setq region-start (point))))
-        (remove-overlays region-start region-end 'excerpt-note-overlay t)
+        (remove-overlays region-start region-end 'passages-overlay t)
         (let ((inhibit-read-only t))
           (delete-region region-start region-end))
         ;; Clean up multiple consecutive blank lines at deletion point
@@ -1721,46 +1723,46 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
                         (forward-line -1)
                         (looking-at "^[ \t]*$")))
             (delete-region (point) (progn (forward-line 1) (point)))))
-        (excerpt-note--refresh-overlays)
-        (message "Excerpt deleted")))))
+        (passages--refresh-overlays)
+        (message "Passage deleted")))))
 
 ;;;###autoload
-(defun excerpt-note-list-excerpts ()
+(defun passages-list-excerpts ()
   "List all excerpts in the current buffer and jump to the selected one."
   (interactive)
   (unless (derived-mode-p 'org-mode)
     (user-error "Must be in org-mode buffer"))
-  (let ((excerpts (excerpt-note--find-all-excerpts)))
+  (let ((excerpts (passages--find-all-excerpts)))
     (unless excerpts
-      (user-error "No excerpts found in this buffer"))
+      (user-error "No passages found in this buffer"))
     (let* ((choices (mapcar (lambda (excerpt)
-                              (excerpt-note--format-excerpt-choice
+                              (passages--format-excerpt-choice
                                (plist-get excerpt :marker-start)
                                (plist-get excerpt :page)))
                             excerpts))
-           (choice (completing-read "Jump to excerpt: " choices nil t)))
+           (choice (completing-read "Jump to passage: " choices nil t)))
       (when-let* ((pos (cdr (assoc choice choices))))
         (goto-char pos)
-        (excerpt-note--ensure-overlays-at-point)
+        (passages--ensure-overlays-at-point)
         (recenter)
-        (message "Jumped to excerpt")))))
+        (message "Jumped to passage")))))
 
 ;;; Path fix utility
 
-;; Note: excerpt-note-fix-file-paths, excerpt-note-update-source-file, and
-;; excerpt-note--try-find-path-for-file are removed with the new compact format
+;; Note: passages-fix-file-paths, passages-update-source-file, and
+;; passages--try-find-path-for-file are removed with the new compact format
 ;; are deprecated with the new compact format (file info in text properties)
 
 ;;; Debug utilities
 
 ;;;###autoload
-(defun excerpt-note-show-selected-text ()
+(defun passages-show-selected-text ()
   "Show what text will be extracted (for debugging)."
   (interactive)
   (when (eq major-mode 'pdf-view-mode)
     (if (pdf-view-active-region-p)
         (let ((text (car (pdf-view-active-region-text))))
-          (with-current-buffer (get-buffer-create "*Excerpt Preview*")
+          (with-current-buffer (get-buffer-create "*Passages Preview*")
             (erase-buffer)
             (insert "=== TEXT TO BE INSERTED ===\n\n")
             (insert text)
@@ -1772,7 +1774,7 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
       (message "No region selected"))))
 
 ;;;###autoload
-(defun excerpt-note-preview-extraction ()
+(defun passages-preview-extraction ()
   "Preview text extraction results for current PDF selection."
   (interactive)
   (unless (eq major-mode 'pdf-view-mode)
@@ -1781,9 +1783,9 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
     (user-error "No region selected"))
 
   (let* ((page (pdf-view-current-page))
-         (edges (excerpt-note--pdf-extract-edges (pdf-view-active-region)))
-         (lines (excerpt-note--get-pdf-lines-in-region page edges))
-         (extracted-text (when lines (excerpt-note--pdf-extract-text page edges))))
+         (edges (passages--pdf-extract-edges (pdf-view-active-region)))
+         (lines (passages--get-pdf-lines-in-region page edges))
+         (extracted-text (when lines (passages--pdf-extract-text page edges))))
 
     (with-current-buffer (get-buffer-create "*Extraction Preview*")
       (erase-buffer)
@@ -1794,7 +1796,7 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
         (dolist (line lines)
           (insert (format "  %s\n"
                           (truncate-string-to-width
-                           (excerpt-note--line-text line) 70 nil nil "...")))))
+                           (passages--line-text line) 70 nil nil "...")))))
 
       (insert "\n--- RESULT ---\n")
       (insert (or extracted-text "[extraction failed]"))
@@ -1804,7 +1806,7 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
       (pop-to-buffer (current-buffer)))))
 
 ;;;###autoload
-(defun excerpt-note-debug-char-positions ()
+(defun passages-debug-char-positions ()
   "Debug character positions to see Y coordinate differences."
   (interactive)
   (unless (eq major-mode 'pdf-view-mode)
@@ -1813,7 +1815,7 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
     (user-error "No region selected"))
 
   (let* ((page (pdf-view-current-page))
-         (edges (excerpt-note--pdf-extract-edges (pdf-view-active-region)))
+         (edges (passages--pdf-extract-edges (pdf-view-active-region)))
          (edge-top (nth 1 edges))
          (edge-bottom (nth 3 edges))
          (y-margin 0.005)
@@ -1857,7 +1859,7 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
       (pop-to-buffer (current-buffer)))))
 
 ;;;###autoload
-(defun excerpt-note-debug-region ()
+(defun passages-debug-region ()
   "Debug: show raw region data and computed edges."
   (interactive)
   (unless (eq major-mode 'pdf-view-mode)
@@ -1865,18 +1867,18 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
   (unless (pdf-view-active-region-p)
     (user-error "No region selected"))
   (let* ((raw-region (pdf-view-active-region))
-         (computed-edges (excerpt-note--pdf-extract-edges raw-region)))
+         (computed-edges (passages--pdf-extract-edges raw-region)))
     (message "Raw region: %S\nComputed edges: %S" raw-region computed-edges)))
 
 ;;;###autoload
-(defun excerpt-note-debug-at-point ()
+(defun passages-debug-at-point ()
   "Debug excerpt detection at current position."
   (interactive)
-  (let ((excerpts (excerpt-note--find-all-excerpts)))
+  (let ((excerpts (passages--find-all-excerpts)))
     (if excerpts
         (progn
-          (message "Found %d excerpts" (length excerpts))
-          (with-current-buffer (get-buffer-create "*Excerpt Debug*")
+          (message "Found %d passages" (length excerpts))
+          (with-current-buffer (get-buffer-create "*Passages Debug*")
             (erase-buffer)
             (insert (format "Total found: %d\n\n" (length excerpts)))
             (dolist (excerpt excerpts)
@@ -1890,49 +1892,49 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
                                50 nil nil "..."))))
             (goto-char (point-min))
             (pop-to-buffer (current-buffer))))
-      (message "No excerpts found!"))))
+      (message "No passages found!"))))
 
 ;;;###autoload
-(defun excerpt-note-force-refresh ()
+(defun passages-force-refresh ()
   "Force refresh all overlays with detailed logging."
   (interactive)
-  (let ((excerpt-note-debug t))
-    (excerpt-note--remove-overlays)
-    (let ((excerpts (excerpt-note--find-all-excerpts)))
+  (let ((passages-debug t))
+    (passages--remove-overlays)
+    (let ((excerpts (passages--find-all-excerpts)))
       (message "========================================")
-      (message "Found %d excerpts to render" (length excerpts))
+      (message "Found %d passages to render" (length excerpts))
       (dolist (excerpt excerpts)
         (message "Rendering: page=%d file='%s' body=%d-%d"
                  (plist-get excerpt :page)
                  (plist-get excerpt :file)
                  (plist-get excerpt :body-start)
                  (plist-get excerpt :body-end))
-        (excerpt-note--add-overlay-for-excerpt excerpt))
+        (passages--add-overlay-for-excerpt excerpt))
       (message "========================================")
-      (message "Refresh complete: %d excerpts rendered" (length excerpts)))))
+      (message "Refresh complete: %d passages rendered" (length excerpts)))))
 
 ;;;###autoload
-(defun excerpt-note-check-conflicts ()
+(defun passages-check-conflicts ()
   "Check for conflicting modes or settings."
   (interactive)
   (with-current-buffer (current-buffer)
     (let ((info '()))
       (push (format "Major mode: %s" major-mode) info)
       (push (format "Buffer size: %d bytes" (buffer-size)) info)
-      (push (format "Excerpt-note-mode: %s" excerpt-note-mode) info)
-      (push (format "Excerpt-note-doc-mode: %s"
-                    (if (boundp 'excerpt-note-doc-mode) excerpt-note-doc-mode "N/A")) info)
+      (push (format "Passages-mode: %s" passages-mode) info)
+      (push (format "Passages-doc-mode: %s"
+                    (if (boundp 'passages-doc-mode) passages-doc-mode "N/A")) info)
       (push (format "Total overlays: %d"
                    (length (overlays-in (point-min) (point-max)))) info)
-      (push (format "Excerpt overlays: %d"
+      (push (format "Passage overlays: %d"
                    (length (seq-filter
-                           (lambda (ov) (overlay-get ov 'excerpt-note-overlay))
+                           (lambda (ov) (overlay-get ov 'passages-overlay))
                            (overlays-in (point-min) (point-max))))) info)
       (push (format "JIT lock registered: %s"
-                   (memq 'excerpt-note--jit-lock-function
+                   (memq 'passages--jit-lock-function
                          (bound-and-true-p jit-lock-functions))) info)
 
-      (with-current-buffer (get-buffer-create "*Excerpt Conflicts*")
+      (with-current-buffer (get-buffer-create "*Passages Conflicts*")
         (erase-buffer)
         (insert "System Check Results\n")
         (insert "====================\n\n")
@@ -1941,15 +1943,15 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
         (goto-char (point-min))
         (pop-to-buffer (current-buffer)))
 
-      (message "Check complete. See *Excerpt Conflicts* buffer."))))
+      (message "Check complete. See *Passages Conflicts* buffer."))))
 
-(defun excerpt-note-debug ()
+(defun passages-debug ()
   "Show debug info."
   (interactive)
-  (let ((excerpts (excerpt-note--find-all-excerpts)))
-    (with-current-buffer (get-buffer-create "*Excerpt Debug*")
+  (let ((excerpts (passages--find-all-excerpts)))
+    (with-current-buffer (get-buffer-create "*Passages Debug*")
       (erase-buffer)
-      (insert (format "Found %d excerpts:\n\n" (length excerpts)))
+      (insert (format "Found %d passages:\n\n" (length excerpts)))
       (dolist (excerpt excerpts)
         (insert (format "Page: %d\n" (plist-get excerpt :page)))
         (insert (format "  File: %s\n" (plist-get excerpt :file)))
@@ -1962,22 +1964,22 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
 
 ;;; Auto-refresh
 
-(defun excerpt-note--setup-auto-refresh ()
+(defun passages--setup-auto-refresh ()
   "Setup auto-refresh on save."
-  (add-hook 'after-save-hook #'excerpt-note--refresh-overlays nil t))
+  (add-hook 'after-save-hook #'passages--refresh-overlays nil t))
 
-(defun excerpt-note--setup-jit-lock ()
+(defun passages--setup-jit-lock ()
   "Setup JIT lock."
-  (jit-lock-register #'excerpt-note--jit-lock-function))
+  (jit-lock-register #'passages--jit-lock-function))
 
-(defun excerpt-note--teardown-jit-lock ()
+(defun passages--teardown-jit-lock ()
   "Remove JIT lock."
-  (jit-lock-unregister #'excerpt-note--jit-lock-function))
+  (jit-lock-unregister #'passages--jit-lock-function))
 
 ;;; Utility
 
 ;;;###autoload
-(defun excerpt-note-open-notes ()
+(defun passages-open-notes ()
   "Open or create notes file."
   (interactive)
   (unless (memq major-mode '(pdf-view-mode nov-mode))
@@ -1985,7 +1987,7 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
   (let* ((file (if (eq major-mode 'pdf-view-mode)
                   (buffer-file-name)
                 (or nov-file-name (buffer-file-name))))
-         (note-buffer (excerpt-note--get-note-buffer file)))
+         (note-buffer (passages--get-note-buffer file)))
     (pop-to-buffer note-buffer
                    '((display-buffer-use-some-window
                       display-buffer-pop-up-window)
@@ -1994,26 +1996,26 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
 ;;; Minor mode for Org buffers (rendering, overlays, JIT-lock)
 
 ;;;###autoload
-(define-minor-mode excerpt-note-mode
+(define-minor-mode passages-mode
   "Minor mode for inline excerpts in Org buffers.
 Handles rendering, overlays, and JIT-lock fontification."
-  :lighter " Exc"
+  :lighter " §"
   :keymap (let ((map (make-sparse-keymap)))
-            (define-key map (kbd "C-c e j") 'excerpt-note-jump-to-source)
-            (define-key map (kbd "C-c e r") 'excerpt-note--refresh-overlays)
-            (define-key map (kbd "C-c e d") 'excerpt-note-debug)
-            (define-key map (kbd "C-c e k") 'excerpt-note-delete-at-point)
-            (define-key map (kbd "C-c e l") 'excerpt-note-list-excerpts)
+            (define-key map (kbd "C-c e j") 'passages-jump-to-source)
+            (define-key map (kbd "C-c e r") 'passages--refresh-overlays)
+            (define-key map (kbd "C-c e d") 'passages-debug)
+            (define-key map (kbd "C-c e k") 'passages-delete-at-point)
+            (define-key map (kbd "C-c e l") 'passages-list-excerpts)
             map)
-  (if excerpt-note-mode
+  (if passages-mode
       (progn
-        (excerpt-note--setup-auto-refresh)
-        (excerpt-note--setup-jit-lock)
+        (passages--setup-auto-refresh)
+        (passages--setup-jit-lock)
 
-        (let ((count (excerpt-note--add-overlays)))
+        (let ((count (passages--add-overlays)))
           (if (> count 0)
-              (message "Excerpt-note mode enabled with %d excerpts" count)
-            (message "Excerpt-note mode enabled (no excerpts found)")))
+              (message "Passages mode enabled with %d passages" count)
+            (message "Passages mode enabled (no passages found)")))
 
         (when (and (fboundp 'jit-lock-fontify-now)
                    (get-buffer-window))
@@ -2024,114 +2026,114 @@ Handles rendering, overlays, and JIT-lock fontification."
           (lambda (buf)
             (when (buffer-live-p buf)
               (with-current-buffer buf
-                (when excerpt-note-mode
-                  (excerpt-note--ensure-overlays-at-point)))))
+                (when passages-mode
+                  (passages--ensure-overlays-at-point)))))
           (current-buffer)))
 
-    (excerpt-note--teardown-jit-lock)
-    (excerpt-note--remove-overlays)
-    (remove-hook 'after-save-hook #'excerpt-note--refresh-overlays t)
-    (message "Excerpt-note mode disabled")))
+    (passages--teardown-jit-lock)
+    (passages--remove-overlays)
+    (remove-hook 'after-save-hook #'passages--refresh-overlays t)
+    (message "Passages mode disabled")))
 
 ;;; Minor mode for Document buffers (PDF/EPUB) - keybinding management
 
-(defvar excerpt-note-doc-mode-map
+(defvar passages-doc-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "e") #'excerpt-note-insert)
-    (define-key map (kbd "i") #'excerpt-note-open-notes)
-    (define-key map (kbd "I") #'excerpt-note-find-this-location-in-notes)
+    (define-key map (kbd "e") #'passages-insert)
+    (define-key map (kbd "i") #'passages-open-notes)
+    (define-key map (kbd "I") #'passages-find-this-location-in-notes)
     map)
-  "Keymap for `excerpt-note-doc-mode'.
+  "Keymap for `passages-doc-mode'.
 Bindings for interaction in PDF and EPUB buffers.")
 
 ;;;###autoload
-(define-minor-mode excerpt-note-doc-mode
-  "Minor mode for excerpt-note keybindings in document buffers (PDF/EPUB).
+(define-minor-mode passages-doc-mode
+  "Minor mode for passages keybindings in document buffers (PDF/EPUB).
 This mode provides reliable keybindings that won't be overridden by
 major mode maps or other minor modes.
 
-\\{excerpt-note-doc-mode-map}"
+\\{passages-doc-mode-map}"
   :lighter " Exc-Doc"
-  :keymap excerpt-note-doc-mode-map
-  (if excerpt-note-doc-mode
-      (message "Excerpt-note-doc-mode enabled: e=insert, i=notes, I=find-location")
-    (message "Excerpt-note-doc-mode disabled")))
+  :keymap passages-doc-mode-map
+  (if passages-doc-mode
+      (message "Passages-doc-mode enabled: e=insert, i=notes, I=find-location")
+    (message "Passages-doc-mode disabled")))
 
 ;;; Setup functions - now using minor mode instead of local-set-key
 
 ;;;###autoload
-(defun excerpt-note-setup-pdf ()
-  "Setup excerpt-note for pdf-view-mode.
-Enables `excerpt-note-doc-mode' for reliable keybindings."
-  (excerpt-note-doc-mode 1))
+(defun passages-setup-pdf ()
+  "Setup passages for pdf-view-mode.
+Enables `passages-doc-mode' for reliable keybindings."
+  (passages-doc-mode 1))
 
 ;;;###autoload
-(defun excerpt-note-setup-epub ()
-  "Setup excerpt-note for nov-mode.
-Enables `excerpt-note-doc-mode' for reliable keybindings."
-  (excerpt-note-doc-mode 1))
+(defun passages-setup-epub ()
+  "Setup passages for nov-mode.
+Enables `passages-doc-mode' for reliable keybindings."
+  (passages-doc-mode 1))
 
-(defun excerpt-note--org-mode-hook-fn ()
-  "Hook function for `org-mode-hook' to auto-enable `excerpt-note-mode'."
+(defun passages--org-mode-hook-fn ()
+  "Hook function for `org-mode-hook' to auto-enable `passages-mode'."
   (when-let* ((file-name (buffer-file-name)))
     (when (or (string-match-p "\\.notes\\.org$" file-name)
-              (and excerpt-note-directory
+              (and passages-directory
                    (string-prefix-p
-                    (expand-file-name excerpt-note-directory)
+                    (expand-file-name passages-directory)
                     (expand-file-name file-name)))
-              (and (excerpt-note--denote-available-p)
+              (and (passages--denote-available-p)
                    (string-match-p
                     (regexp-quote (expand-file-name denote-directory))
                     (expand-file-name file-name))
                    (string-match-p
-                    (concat "__" excerpt-note-denote-keyword)
+                    (concat "__" passages-denote-keyword)
                     file-name)))
-      (excerpt-note-mode 1))))
+      (passages-mode 1))))
 
 ;;;###autoload
-(defun excerpt-note-enable ()
-  "Enable excerpt-note globally."
+(defun passages-enable ()
+  "Enable passages globally."
   (interactive)
-  (add-hook 'pdf-view-mode-hook #'excerpt-note-setup-pdf)
-  (add-hook 'nov-mode-hook #'excerpt-note-setup-epub)
-  (add-hook 'org-mode-hook #'excerpt-note--org-mode-hook-fn)
+  (add-hook 'pdf-view-mode-hook #'passages-setup-pdf)
+  (add-hook 'nov-mode-hook #'passages-setup-epub)
+  (add-hook 'org-mode-hook #'passages--org-mode-hook-fn)
   ;; Enable in already open PDF/EPUB buffers
   (dolist (buf (buffer-list))
     (with-current-buffer buf
       (when (and (memq major-mode '(pdf-view-mode nov-mode))
-                 (not (bound-and-true-p excerpt-note-doc-mode)))
-        (excerpt-note-doc-mode 1))))
-  (message "Excerpt-note enabled globally"))
+                 (not (bound-and-true-p passages-doc-mode)))
+        (passages-doc-mode 1))))
+  (message "Passages enabled globally"))
 
 ;;;###autoload
-(defun excerpt-note-disable ()
-  "Disable excerpt-note globally."
+(defun passages-disable ()
+  "Disable passages globally."
   (interactive)
-  (remove-hook 'pdf-view-mode-hook #'excerpt-note-setup-pdf)
-  (remove-hook 'nov-mode-hook #'excerpt-note-setup-epub)
-  (remove-hook 'org-mode-hook #'excerpt-note--org-mode-hook-fn)
+  (remove-hook 'pdf-view-mode-hook #'passages-setup-pdf)
+  (remove-hook 'nov-mode-hook #'passages-setup-epub)
+  (remove-hook 'org-mode-hook #'passages--org-mode-hook-fn)
   ;; Disable in all currently active buffers
   (dolist (buf (buffer-list))
     (with-current-buffer buf
-      (when (bound-and-true-p excerpt-note-doc-mode)
-        (excerpt-note-doc-mode -1))
-      (when (bound-and-true-p excerpt-note-mode)
-        (excerpt-note-mode -1))))
-  (message "Excerpt-note disabled globally"))
+      (when (bound-and-true-p passages-doc-mode)
+        (passages-doc-mode -1))
+      (when (bound-and-true-p passages-mode)
+        (passages-mode -1))))
+  (message "Passages disabled globally"))
 
 ;;; Utilities
 
-(defun excerpt-note--conv-page-scroll-percentage (scroll &optional hscroll)
+(defun passages--conv-page-scroll-percentage (scroll &optional hscroll)
   "Convert SCROLL to percentage."
   (let* ((size (pdf-view-image-size))
          (height (cdr size)))
     (/ (float scroll) height)))
 
-(defun excerpt-note--conv-page-percentage-scroll (percentage)
+(defun passages--conv-page-percentage-scroll (percentage)
   "Convert PERCENTAGE to scroll position."
   (let* ((size (pdf-view-image-size))
          (height (cdr size)))
     (floor (* percentage height))))
 
-(provide 'excerpt-note)
-;;; excerpt-note.el ends here
+(provide 'passages)
+;;; passages.el ends here

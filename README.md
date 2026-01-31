@@ -1,4 +1,4 @@
-# excerpt-note.el
+# passages.el
 
 A lightweight Emacs package for seamless PDF and EPUB annotation with Org-mode.
 
@@ -8,7 +8,7 @@ A lightweight Emacs package for seamless PDF and EPUB annotation with Org-mode.
 
 Academic reading often involves complex annotations: multi-paragraph notes, inline images, LaTeX equations, code blocks, and lengthy excerpts. Traditional annotation tools force you to think about structure—where does the note end? How do I separate my thoughts from the source material?
 
-**excerpt-note** eliminates this friction with a clean, compact format:
+**passages** eliminates this friction with a clean, compact format:
 
 ```
 ● P42 The extracted text from the source document appears here.
@@ -36,34 +36,34 @@ Each excerpt starts with a page marker (`● P42`) followed by the source text. 
 Requires Emacs 27.1+, [pdf-tools](https://github.com/vedang/pdf-tools), and [nov.el](https://depp.brause.cc/nov.el/).
 
 ```elisp
-(use-package excerpt-note
-  :load-path "path/to/excerpt-note"
-  :commands (excerpt-note-enable excerpt-note-disable)
+(use-package passages
+  :load-path "path/to/passages"
+  :commands (passages-enable passages-disable)
   :config
-  (excerpt-note-enable))
+  (passages-enable))
 ```
 
-To disable: `M-x excerpt-note-disable`
+To disable: `M-x passages-disable`
 
 ## Usage
 
-### In PDF/EPUB buffers (`excerpt-note-doc-mode`)
+### In PDF/EPUB buffers (`passages-doc-mode`)
 
 | Key | Command | Description |
 |-----|---------|-------------|
-| `e` | `excerpt-note-insert` | Extract selected text (or create empty anchor) |
-| `i` | `excerpt-note-open-notes` | Open/create notes file |
-| `I` | `excerpt-note-find-this-location-in-notes` | Jump to notes for current page |
+| `e` | `passages-insert` | Extract selected text (or create empty anchor) |
+| `i` | `passages-open-notes` | Open/create notes file |
+| `I` | `passages-find-this-location-in-notes` | Jump to notes for current page |
 
-### In Org notes buffer (`excerpt-note-mode`)
+### In Org notes buffer (`passages-mode`)
 
 | Key | Command | Description |
 |-----|---------|-------------|
-| `C-c e j` | `excerpt-note-jump-to-source` | Jump to source location |
-| `C-c e r` | `excerpt-note--refresh-overlays` | Refresh visual rendering |
-| `C-c e d` | `excerpt-note-debug` | Show detected excerpts |
-| `C-c e k` | `excerpt-note-delete-at-point` | Delete excerpt at point |
-| `C-c e l` | `excerpt-note-list-excerpts` | List all excerpts in buffer |
+| `C-c e j` | `passages-jump-to-source` | Jump to source location |
+| `C-c e r` | `passages--refresh-overlays` | Refresh visual rendering |
+| `C-c e d` | `passages-debug` | Show detected excerpts |
+| `C-c e k` | `passages-delete-at-point` | Delete excerpt at point |
+| `C-c e l` | `passages-list-excerpts` | List all excerpts in buffer |
 
 ## Workflow
 
@@ -79,39 +79,39 @@ To disable: `M-x excerpt-note-disable`
 
 ```elisp
 ;; Where to search for source files
-(setq excerpt-note-search-paths
+(setq passages-search-paths
       '("~/Documents/papers/"
         "~/Documents/books/"))
 
 ;; Use relative paths for portability
-(setq excerpt-note-use-relative-paths t)
+(setq passages-use-relative-paths t)
 
 ;; Custom directory for note files (nil = next to source files)
-(setq excerpt-note-directory nil)
+(setq passages-directory nil)
 
 ;; Auto-parse excerpts when opening files
-(setq excerpt-note-auto-parse t)
+(setq passages-auto-parse t)
 
 ;; Enable smart text extraction for PDFs (default: t)
-(setq excerpt-note-smart-text-extraction t)
+(setq passages-smart-text-extraction t)
 ```
 
 ### Denote & Citar Integration
 
 ```elisp
 ;; Integrate with Denote
-(setq excerpt-note-use-denote t)
-(setq excerpt-note-denote-keyword "excerpt")
+(setq passages-use-denote t)
+(setq passages-denote-keyword "excerpt")
 
 ;; Integrate with Citar
-(setq excerpt-note-use-citar t)
+(setq passages-use-citar t)
 ```
 
 ### Debug Mode
 
 ```elisp
 ;; Enable verbose logging for troubleshooting
-(setq excerpt-note-debug t)
+(setq passages-debug t)
 ```
 
 ## Note File Structure
@@ -139,32 +139,32 @@ The `● Pxx` marker is displayed with a larger, colored font. The excerpt conte
 
 | Command | Description |
 |---------|-------------|
-| `excerpt-note-enable` | Enable excerpt-note globally |
-| `excerpt-note-disable` | Disable excerpt-note globally |
-| `excerpt-note-insert` | Insert excerpt from selected text |
-| `excerpt-note-open-notes` | Open/create notes file for current document |
-| `excerpt-note-jump-to-source` | Jump from note to source location |
-| `excerpt-note-find-this-location-in-notes` | Find notes for current page |
-| `excerpt-note-delete-at-point` | Delete the excerpt at point |
-| `excerpt-note-list-excerpts` | List all excerpts in current buffer |
+| `passages-enable` | Enable passages globally |
+| `passages-disable` | Disable passages globally |
+| `passages-insert` | Insert excerpt from selected text |
+| `passages-open-notes` | Open/create notes file for current document |
+| `passages-jump-to-source` | Jump from note to source location |
+| `passages-find-this-location-in-notes` | Find notes for current page |
+| `passages-delete-at-point` | Delete the excerpt at point |
+| `passages-list-excerpts` | List all excerpts in current buffer |
 
 ### Debugging Commands
 
 | Command | Description |
 |---------|-------------|
-| `excerpt-note-debug` | Show all detected excerpts |
-| `excerpt-note-debug-at-point` | Debug excerpt detection |
-| `excerpt-note-check-conflicts` | Check for conflicting modes or settings |
-| `excerpt-note-force-refresh` | Force re-render all overlays with logging |
-| `excerpt-note-preview-extraction` | Preview text extraction for PDF selection |
-| `excerpt-note-show-selected-text` | Show the currently selected text in PDF |
+| `passages-debug` | Show all detected excerpts |
+| `passages-debug-at-point` | Debug excerpt detection |
+| `passages-check-conflicts` | Check for conflicting modes or settings |
+| `passages-force-refresh` | Force re-render all overlays with logging |
+| `passages-preview-extraction` | Preview text extraction for PDF selection |
+| `passages-show-selected-text` | Show the currently selected text in PDF |
 
 ## Architecture
 
 The package uses two minor modes:
 
-- **`excerpt-note-mode`**: For Org buffers - handles overlays, JIT-lock fontification, and note keybindings
-- **`excerpt-note-doc-mode`**: For PDF/EPUB buffers - provides document interaction keybindings
+- **`passages-mode`**: For Org buffers - handles overlays, JIT-lock fontification, and note keybindings
+- **`passages-doc-mode`**: For PDF/EPUB buffers - provides document interaction keybindings
 
 ## Migrating from v2.x
 
