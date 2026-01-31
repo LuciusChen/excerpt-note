@@ -116,22 +116,26 @@ To disable: `M-x passages-disable`
 
 ## Note File Structure
 
-Each excerpt uses a compact single-line format:
+Excerpts support multi-line content:
 
 ```org
-● P15 The extracted text from the source document appears here,
-preserving original formatting and handling line breaks intelligently.
+● P15 The extracted text from the source document.
+It can span multiple lines if you manually
+edit or reformat the passage. ⟦file.pdf|(15 . 0.2)⟧
 
 Your notes go here. Write as much as you need.
 Include images: [[./figures/diagram.png]]
 Or LaTeX: $E = mc^2$
 
-● P16 Next excerpt starts with another marker...
+● P16 Another excerpt... ⟦file.pdf|(16 . 0.3)⟧
 
 More notes for this excerpt...
 ```
 
-The `● Pxx` marker is displayed with a larger, colored font. The excerpt content appears in gray to visually distinguish it from your notes.
+- `● Pxx` marks the start of an excerpt (displayed in yellow)
+- Content between `● Pxx` and `⟦...⟧` is the passage (displayed in gray)
+- `⟦file|location⟧` is metadata (hidden when mode is active)
+- Everything after `⟦...⟧` is your notes (normal text)
 
 ## Commands Reference
 
@@ -168,7 +172,7 @@ The package uses two minor modes:
 
 ## Migrating from v2.x
 
-The v3.0 format is more compact:
+The v3.0 format is more compact and supports multi-line excerpts:
 
 **Old format (v2.x):**
 ```
@@ -180,11 +184,13 @@ The v3.0 format is more compact:
 
 **New format (v3.0):**
 ```
-● P42 [excerpt text on same line]
+● P42 [excerpt text - can span
+multiple lines] ⟦document.pdf|(42 . 0.35)⟧
+
 [notes below]
 ```
 
-Old format files are still partially supported for reading, but new excerpts use the compact format.
+Old format files are still partially supported for reading, but new excerpts use the new format.
 
 ## License
 

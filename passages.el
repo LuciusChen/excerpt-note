@@ -862,28 +862,22 @@ Used as fallback for PDF when smart detection fails.
 (defun passages--get-selected-text ()
   "Get selected text from PDF/EPUB, normalized.
 For PDFs, uses position-based extraction if enabled."
-  (cond
-   ((eq major-mode 'pdf-view-mode)
-    (if (pdf-view-active-region-p)
-        (let* ((page (pdf-view-current-page))
-               (edges (passages--pdf-extract-edges (pdf-view-active-region)))
-               (extracted-text
-                (when (and passages-smart-text-extraction edges)
-                  (passages--pdf-extract-text page edges))))
-          (if extracted-text
-              extracted-text
-            ;; Fallback to simple extraction
-            (passages--normalize-text
-             (car (pdf-view-active-region-text)))))
-      (user-error "No text selected in PDF")))
+  (pcase major-mode
+    ('pdf-view-mode
+     (unless (pdf-view-active-region-p)
+       (user-error "No text selected in PDF"))
+     (or (when-let* ((edges (passages--pdf-extract-edges (pdf-view-active-region)))
+                     (_ passages-smart-text-extraction))
+           (passages--pdf-extract-text (pdf-view-current-page) edges))
+         (passages--normalize-text (car (pdf-view-active-region-text)))))
 
-   ((eq major-mode 'nov-mode)
-    (if (use-region-p)
-        (passages--normalize-text
-         (buffer-substring-no-properties (region-beginning) (region-end)))
-      (user-error "No text selected in EPUB")))
+    ('nov-mode
+     (unless (use-region-p)
+       (user-error "No text selected in EPUB"))
+     (passages--normalize-text
+      (buffer-substring-no-properties (region-beginning) (region-end))))
 
-   (t (user-error "Not in PDF or EPUB buffer"))))
+    (_ (user-error "Not in PDF or EPUB buffer"))))
 
 (defun passages--format-location (location)
   "Format LOCATION for storage."
@@ -905,36 +899,39 @@ For PDFs, uses position-based extraction if enabled."
 
 (defun passages--find-excerpts-in-region (start end)
   "Find excerpts in region from START to END.
-Format: ● Pxx [content] ⟦file|location⟧"
+Format: ● Pxx [content - may span multiple lines] ⟦file|location⟧
+Content between marker and ⟦...⟧ is the excerpt body."
   (let (excerpts)
     (save-excursion
       (goto-char start)
-      ;; Match: ● P followed by page number, content, and metadata
-      (while (re-search-forward
-              "^[ \t]*\\(● P\\([0-9]+\\) \\)\\(.*?\\) ?⟦\\([^|]+\\)|\\([^⟧]+\\)⟧$"
-              end t)
-        (let* ((page (string-to-number (match-string 2)))
-               (marker-start (match-beginning 1))
+      ;; Find each ● Pxx marker, then locate its ⟦...⟧ ending
+      (while (re-search-forward "^[ \t]*\\(● P\\([0-9]+\\) \\)" end t)
+        (let* ((marker-start (match-beginning 1))
                (marker-end (match-end 1))
-               (body-start (match-beginning 3))
-               (body-end (match-end 3))
-               (file (match-string 4))
-               (location-str (match-string 5))
-               (meta-start (- (match-end 3) (if (eq (char-before (match-end 3)) ?\s) 0 -1))))
-
-          (when passages-debug
-            (message "Found excerpt: page=%d file=%s loc=%s" page file location-str))
-
-          (push (list :marker-start marker-start
-                      :marker-end marker-end
-                      :page page
-                      :file file
-                      :location location-str
-                      :body-start body-start
-                      :body-end body-end
-                      :meta-start (match-beginning 4)
-                      :meta-end (match-end 0))
-                excerpts))))
+               (page (string-to-number (match-string 2)))
+               (body-start (point)))
+          ;; Find the closing ⟦file|location⟧
+          (when (re-search-forward " ?⟦\\([^|]+\\)|\\([^⟧]+\\)⟧" end t)
+            (let* ((file (match-string 1))
+                   (location-str (match-string 2))
+                   (meta-start (match-beginning 0))
+                   (meta-end (match-end 0))
+                   ;; Body ends where metadata starts (minus optional space)
+                   (body-end (if (eq (char-before meta-start) ?\s)
+                                 (1- meta-start)
+                               meta-start)))
+              (when passages-debug
+                (message "Found excerpt: page=%d file=%s loc=%s" page file location-str))
+              (push (list :marker-start marker-start
+                          :marker-end marker-end
+                          :page page
+                          :file file
+                          :location location-str
+                          :body-start body-start
+                          :body-end body-end
+                          :meta-start meta-start
+                          :meta-end meta-end)
+                    excerpts))))))
     (nreverse excerpts)))
 
 (defun passages--find-all-excerpts ()
@@ -942,19 +939,22 @@ Format: ● Pxx [content] ⟦file|location⟧"
   (passages--find-excerpts-in-region (point-min) (point-max)))
 
 (defun passages--find-excerpts-for-page (page file)
-  "Find all excerpts for PAGE in FILE in current buffer."
+  "Find all excerpts for PAGE in FILE in current buffer.
+Supports multi-line excerpts."
   (let ((positions '()))
     (save-excursion
       (goto-char (point-min))
-      ;; Match: ● Pxx ... ⟦file|location⟧
-      (while (re-search-forward
-              (format "^[ \t]*● P%d .*⟦\\([^|]+\\)|[^⟧]+⟧$" page) nil t)
-        (let ((excerpt-file (match-string 1)))
-          (when (or (null file)
-                    (null excerpt-file)
-                    (string-match-p (regexp-quote (file-name-nondirectory file))
-                                    excerpt-file))
-            (push (line-beginning-position) positions)))))
+      ;; Find ● Pxx marker, then locate its ⟦file|...⟧
+      (while (re-search-forward (format "^[ \t]*● P%d " page) nil t)
+        (let ((marker-pos (line-beginning-position)))
+          ;; Find the closing ⟦file|location⟧
+          (when (re-search-forward "⟦\\([^|]+\\)|[^⟧]+⟧" nil t)
+            (let ((excerpt-file (match-string 1)))
+              (when (or (null file)
+                        (null excerpt-file)
+                        (string-match-p (regexp-quote (file-name-nondirectory file))
+                                        excerpt-file))
+                (push marker-pos positions)))))))
     (nreverse positions)))
 
 ;;; Optimized overlay system with org separator
@@ -988,7 +988,8 @@ Format: ● Pxx [content] ⟦file|location⟧"
 
 (defun passages--add-overlay-for-excerpt (excerpt)
   "Add overlay for a single EXCERPT.
-Format: ● Pxx [content] ⟦file|location⟧"
+Format: ● Pxx [content - may span multiple lines] ⟦file|location⟧
+Content between marker and ⟦...⟧ is styled gray, metadata is hidden."
   (let* ((marker-start (plist-get excerpt :marker-start))
          (marker-end (plist-get excerpt :marker-end))
          (body-start (plist-get excerpt :body-start))
@@ -1178,6 +1179,55 @@ just after that boundary and any trailing blank lines."
             (point))
         marker-start))))
 
+(defun passages--find-epub-buffer (file-name)
+  "Find an open EPUB buffer for FILE-NAME."
+  (catch 'found-buf
+    (dolist (buf (buffer-list))
+      (with-current-buffer buf
+        (when (and (eq major-mode 'nov-mode)
+                   (boundp 'nov-file-name)
+                   nov-file-name
+                   (string= (file-name-nondirectory nov-file-name) file-name))
+          (throw 'found-buf buf))))
+    nil))
+
+(defun passages--compare-locations-epub (new-loc exc-loc new-anchor exc epub-buffer)
+  "Compare EPUB locations NEW-LOC and EXC-LOC.
+NEW-ANCHOR is the anchor text for new excerpt, EXC is the existing excerpt plist.
+EPUB-BUFFER is the buffer to search for anchor text comparison."
+  (let ((new-ch (passages--get-location-page new-loc))
+        (exc-ch (passages--get-location-page exc-loc)))
+    (if (/= new-ch exc-ch)
+        (- new-ch exc-ch)
+      ;; Same chapter — compare by stored buffer position
+      (let ((new-pos (passages--get-location-top new-loc))
+            (exc-pos (passages--get-location-top exc-loc)))
+        (cond
+         ((and (numberp new-pos) (numberp exc-pos))
+          (- new-pos exc-pos))
+         ;; Fall back to anchor text comparison
+         ((and epub-buffer
+               (buffer-live-p epub-buffer)
+               (with-current-buffer epub-buffer
+                 (and (eq major-mode 'nov-mode)
+                      (boundp 'nov-documents-index)
+                      (= nov-documents-index new-ch))))
+          (with-current-buffer epub-buffer
+            (let ((exc-anchor (passages--extract-anchor-from-excerpt exc))
+                  (pos-a (and new-anchor
+                              (save-excursion
+                                (goto-char (point-min))
+                                (when (search-forward new-anchor nil t)
+                                  (match-beginning 0)))))
+                  (pos-b nil))
+              (when exc-anchor
+                (setq pos-b (save-excursion
+                              (goto-char (point-min))
+                              (when (search-forward exc-anchor nil t)
+                                (match-beginning 0)))))
+              (if (and pos-a pos-b) (- pos-a pos-b) 0))))
+         (t 0))))))
+
 (defun passages--find-insertion-point (loc-info new-text)
   "Find the buffer position where a new excerpt should be inserted.
 LOC-INFO is the plist (:type :file :location) for the new excerpt.
@@ -1197,70 +1247,25 @@ existing excerpt sorts after the new one."
            excerpts)))
     (if (null same-file-excerpts)
         (point-max)
-      (let ((insertion-excerpt nil)
-            (new-anchor (when (and new-text (> (length new-text) 0))
-                          (substring new-text
-                                     0 (min 30 (length new-text)))))
-            ;; Find EPUB buffer for anchor comparison
-            (epub-buffer
-             (when (eq new-type 'epub)
-               (catch 'found-buf
-                 (dolist (buf (buffer-list))
-                   (with-current-buffer buf
-                     (when (and (eq major-mode 'nov-mode)
-                                (boundp 'nov-file-name)
-                                nov-file-name
-                                (string= (file-name-nondirectory nov-file-name)
-                                         new-file-name))
-                       (throw 'found-buf buf))))
-                 nil))))
-        (catch 'found
-          (dolist (exc same-file-excerpts)
-            (let* ((exc-loc-str (plist-get exc :location))
-                   (exc-location (passages--parse-location-string exc-loc-str))
-                   (cmp
-                    (cond
-                     ;; PDF: compare (page, vpos)
-                     ((eq new-type 'pdf)
-                      (passages--compare-locations-pdf
-                       new-location exc-location))
-                     ;; EPUB: compare chapter first, then stored position
-                     ((eq new-type 'epub)
-                      (let ((new-ch (passages--get-location-page new-location))
-                            (exc-ch (passages--get-location-page exc-location)))
-                        (if (/= new-ch exc-ch)
-                            (- new-ch exc-ch)
-                          ;; Same chapter — compare by stored buffer position
-                          (let ((new-pos (passages--get-location-top new-location))
-                                (exc-pos (passages--get-location-top exc-location)))
-                            (if (and (numberp new-pos) (numberp exc-pos))
-                                (- new-pos exc-pos)
-                              ;; Fall back to anchor text comparison if positions unavailable
-                              (if (and epub-buffer (buffer-live-p epub-buffer))
-                                  (with-current-buffer epub-buffer
-                                    (if (and (eq major-mode 'nov-mode)
-                                             (boundp 'nov-documents-index)
-                                             (= nov-documents-index new-ch))
-                                        (let* ((exc-anchor
-                                                (passages--extract-anchor-from-excerpt exc))
-                                               (pos-a (and new-anchor
-                                                           (save-excursion
-                                                             (goto-char (point-min))
-                                                             (when (search-forward new-anchor nil t)
-                                                               (match-beginning 0)))))
-                                               (pos-b (and exc-anchor
-                                                           (save-excursion
-                                                             (goto-char (point-min))
-                                                             (when (search-forward exc-anchor nil t)
-                                                               (match-beginning 0))))))
-                                          (if (and pos-a pos-b) (- pos-a pos-b) 0))
-                                      0))
-                                0))))))
-                     (t 0))))
-              ;; New excerpt comes before this existing one
-              (when (< cmp 0)
-                (setq insertion-excerpt exc)
-                (throw 'found t)))))
+      (let* ((new-anchor (when (and new-text (> (length new-text) 0))
+                           (substring new-text 0 (min 30 (length new-text)))))
+             (epub-buffer (when (eq new-type 'epub)
+                            (passages--find-epub-buffer new-file-name)))
+             (insertion-excerpt
+              (catch 'found
+                (dolist (exc same-file-excerpts)
+                  (let* ((exc-loc-str (plist-get exc :location))
+                         (exc-location (passages--parse-location-string exc-loc-str))
+                         (cmp (cond
+                               ((eq new-type 'pdf)
+                                (passages--compare-locations-pdf new-location exc-location))
+                               ((eq new-type 'epub)
+                                (passages--compare-locations-epub
+                                 new-location exc-location new-anchor exc epub-buffer))
+                               (t 0))))
+                    (when (< cmp 0)
+                      (throw 'found exc))))
+                nil)))
         (if insertion-excerpt
             (passages--insertion-pos-before-excerpt insertion-excerpt)
           (point-max))))))
@@ -1282,24 +1287,18 @@ Returns (PAGE . PREVIEW) if duplicate found, nil otherwise."
       (with-current-buffer note-buffer
         (save-excursion
           (goto-char (point-min))
-          (when (search-forward anchor nil t)
-            ;; Found match, get context
-            (let ((match-pos (match-beginning 0)))
-              ;; Find the marker line for this excerpt
-              (goto-char match-pos)
-              (when (re-search-backward "^[ \t]*● P\\([0-9]+\\)" nil t)
-                (let* ((page (string-to-number (match-string 1)))
-                       (preview-start (save-excursion
-                                        (forward-line 1)
-                                        (point)))
-                       (preview-end (save-excursion
-                                      (goto-char preview-start)
-                                      (min (+ preview-start 80)
-                                           (line-end-position))))
-                       (preview (string-trim
-                                 (buffer-substring-no-properties
-                                  preview-start preview-end))))
-                  (cons page preview))))))))))
+          (when-let* ((_ (search-forward anchor nil t))
+                      (_ (re-search-backward "^[ \t]*● P\\([0-9]+\\)" nil t))
+                      (page (string-to-number (match-string 1)))
+                      (preview-start (save-excursion (forward-line 1) (point)))
+                      (preview-end (min (+ preview-start 80)
+                                        (save-excursion
+                                          (goto-char preview-start)
+                                          (line-end-position))))
+                      (preview (string-trim
+                                (buffer-substring-no-properties
+                                 preview-start preview-end))))
+            (cons page preview)))))))
 
 ;;; Excerpt insertion with org separator
 
@@ -1520,21 +1519,23 @@ Returns the position of the marker line, or nil if not found."
           (point)))))))
 
 (defun passages--parse-marker-line-at-point ()
-  "Parse excerpt marker line at or near point.
-Format: ● Pxx [content] ⟦file|location⟧"
+  "Parse excerpt at or near point.
+Format: ● Pxx [content - may span lines] ⟦file|location⟧"
   (save-excursion
     (when-let* ((marker-pos (passages--find-marker-for-point)))
       (goto-char marker-pos)
-      ;; Match the full line format with metadata
-      (when (looking-at "^[ \t]*● P\\([0-9]+\\) .*⟦\\([^|]+\\)|\\([^⟧]+\\)⟧$")
-        (let* ((page (string-to-number (match-string 1)))
-               (file (match-string 2))
-               (location-str (match-string 3))
-               (type (if (and file (string-match-p "\\.epub$" file)) 'epub 'pdf)))
-          (list :page page
-                :file file
-                :location location-str
-                :type type))))))
+      ;; Match the marker and get page number
+      (when (looking-at "^[ \t]*● P\\([0-9]+\\) ")
+        (let ((page (string-to-number (match-string 1))))
+          ;; Search forward for ⟦file|location⟧
+          (when (re-search-forward "⟦\\([^|]+\\)|\\([^⟧]+\\)⟧" nil t)
+            (let* ((file (match-string 1))
+                   (location-str (match-string 2))
+                   (type (if (and file (string-match-p "\\.epub$" file)) 'epub 'pdf)))
+              (list :page page
+                    :file file
+                    :location location-str
+                    :type type))))))))
 
 (defun passages--find-file-property-nearby (pos)
   "Find passages-file text property at or near POS on the same line.
@@ -1580,15 +1581,19 @@ Returns (FILE . FOUND-POS) or nil."
 (defun passages--extract-anchor-text-at-point ()
   "Extract the first 30 characters of the excerpt body at point.
 Used as anchor text for EPUB secondary location verification.
-New format: content is on same line after ● Pxx, before ⟦file|location⟧."
+Content may span multiple lines, from ● Pxx to ⟦file|location⟧."
   (save-excursion
     (when-let* ((marker-pos (passages--find-marker-for-point)))
       (goto-char marker-pos)
-      ;; New format: ● Pxx [content] ⟦file|location⟧
-      (when (looking-at "^[ \t]*● P[0-9]+ \\(.*?\\) ?⟦[^⟧]+⟧$")
-        (let ((body-text (string-trim (match-string 1))))
-          (when (> (length body-text) 0)
-            (substring body-text 0 (min 30 (length body-text)))))))))
+      (when (looking-at "^[ \t]*● P[0-9]+ ")
+        (goto-char (match-end 0))
+        (let ((body-start (point)))
+          (when (re-search-forward " ?⟦[^⟧]+⟧" nil t)
+            (let* ((body-end (match-beginning 0))
+                   (body-text (string-trim
+                               (buffer-substring-no-properties body-start body-end))))
+              (when (> (length body-text) 0)
+                (substring body-text 0 (min 30 (length body-text)))))))))))
 
 (defun passages--parse-location-string (location-str)
   "Parse LOCATION-STR into a Lisp value (number or cons cell).
