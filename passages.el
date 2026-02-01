@@ -1333,10 +1333,13 @@ The ⟦...⟧ metadata is hidden by overlay but persists in the file."
                (not (eq (window-buffer source-window) source-buffer)))
       (set-window-buffer source-window source-buffer))
 
-    (pop-to-buffer note-buffer
-                   '((display-buffer-use-some-window
-                      display-buffer-pop-up-window)
-                     (inhibit-same-window . t)))
+    ;; Switch to note buffer - reuse existing window if available
+    (if-let* ((existing-window (get-buffer-window note-buffer)))
+        (select-window existing-window)
+      (pop-to-buffer note-buffer
+                     '((display-buffer-use-some-window
+                        display-buffer-pop-up-window)
+                       (inhibit-same-window . t))))
     (goto-char (passages--find-insertion-point loc-info text))
 
     (unless (looking-back "\n\n" 2)
@@ -1437,10 +1440,13 @@ PAGE is the page number used in the label."
          (page (passages--get-location-page location))
          (note-buffer (passages--get-note-buffer file)))
 
-    (pop-to-buffer note-buffer
-                   '((display-buffer-use-some-window
-                      display-buffer-pop-up-window)
-                     (inhibit-same-window . t)))
+    ;; Switch to note buffer - reuse existing window if available
+    (if-let* ((existing-window (get-buffer-window note-buffer)))
+        (select-window existing-window)
+      (pop-to-buffer note-buffer
+                     '((display-buffer-use-some-window
+                        display-buffer-pop-up-window)
+                       (inhibit-same-window . t))))
 
     (unless passages-mode
       (passages-mode 1))
@@ -1482,10 +1488,13 @@ PAGE is the page number used in the label."
          (note-buffer (passages--get-note-buffer file))
          (search-text (substring text 0 (min 40 (length text)))))
 
-    (pop-to-buffer note-buffer
-                   '((display-buffer-use-some-window
-                      display-buffer-pop-up-window)
-                     (inhibit-same-window . t)))
+    ;; Switch to note buffer - reuse existing window if available
+    (if-let* ((existing-window (get-buffer-window note-buffer)))
+        (select-window existing-window)
+      (pop-to-buffer note-buffer
+                     '((display-buffer-use-some-window
+                        display-buffer-pop-up-window)
+                       (inhibit-same-window . t))))
 
     (unless passages-mode
       (passages-mode 1))
@@ -2014,10 +2023,13 @@ An excerpt unit is: ● Pxx [content] + [user notes below]."
                   (buffer-file-name)
                 (or nov-file-name (buffer-file-name))))
          (note-buffer (passages--get-note-buffer file)))
-    (pop-to-buffer note-buffer
-                   '((display-buffer-use-some-window
-                      display-buffer-pop-up-window)
-                     (inhibit-same-window . t)))))
+    ;; Switch to note buffer - reuse existing window if available
+    (if-let* ((existing-window (get-buffer-window note-buffer)))
+        (select-window existing-window)
+      (pop-to-buffer note-buffer
+                     '((display-buffer-use-some-window
+                        display-buffer-pop-up-window)
+                       (inhibit-same-window . t))))))
 
 ;;; Minor mode for Org buffers (rendering, overlays, JIT-lock)
 
