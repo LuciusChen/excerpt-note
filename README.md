@@ -14,14 +14,14 @@ Academic reading often involves complex annotations: multi-paragraph notes, inli
 ● P42 The extracted text from the source document appears here.
 [Your notes below - write freely]
 
-● P43 Another excerpt continues...
+● P43 Another passage continues...
 ```
 
-Each excerpt starts with a page marker (`● P42`) followed by the source text. Your notes go below. Simple, readable, and non-intrusive.
+Each passage starts with a page marker (`● P42`) followed by the source text. Your notes go below. The page number is derived from metadata and rendered via overlay - ensuring it always stays in sync with the actual location.
 
 ## Features
 
-- **Compact visual format**: Clean `● Pxx` markers with styled content
+- **Compact visual format**: Clean `● Pxx` markers (page derived from metadata via overlay)
 - **Bidirectional navigation**: Jump between PDF/EPUB and notes seamlessly
 - **Precise location anchors**: Return to exact scroll positions, not just pages
 - **Org-mode native**: Full support for images, LaTeX, tables, and all Org features
@@ -116,10 +116,10 @@ To disable: `M-x passages-disable`
 
 ## Note File Structure
 
-Excerpts support multi-line content:
+Passages support multi-line content:
 
 ```org
-● P15 The extracted text from the source document.
+● The extracted text from the source document.
 It can span multiple lines if you manually
 edit or reformat the passage. ⟦file.pdf|(15 . 0.2)⟧
 
@@ -127,13 +127,23 @@ Your notes go here. Write as much as you need.
 Include images: [[./figures/diagram.png]]
 Or LaTeX: $E = mc^2$
 
-● P16 Another excerpt... ⟦file.pdf|(16 . 0.3)⟧
+● Another passage... ⟦file.pdf|(16 . 0.3)⟧
 
-More notes for this excerpt...
+More notes for this passage...
 ```
 
-- `● Pxx` marks the start of an excerpt (displayed in yellow)
-- Content between `● Pxx` and `⟦...⟧` is the passage (displayed in gray)
+**Displayed as** (with overlays active):
+```
+● P15 The extracted text from the source document...
+
+Your notes go here...
+
+● P16 Another passage...
+```
+
+- `●` marks the start of a passage
+- `Pxx` is rendered via overlay (derived from location metadata, not editable)
+- Content between `●` and `⟦...⟧` is the passage (displayed in gray)
 - `⟦file|location⟧` is metadata (hidden when mode is active)
 - Everything after `⟦...⟧` is your notes (normal text)
 
@@ -172,7 +182,7 @@ The package uses two minor modes:
 
 ## Migrating from v2.x
 
-The v3.0 format is more compact and supports multi-line excerpts:
+The v3.0 format is more compact and supports multi-line passages:
 
 **Old format (v2.x):**
 ```
@@ -184,13 +194,13 @@ The v3.0 format is more compact and supports multi-line excerpts:
 
 **New format (v3.0):**
 ```
-● P42 [excerpt text - can span
+● [passage text - can span
 multiple lines] ⟦document.pdf|(42 . 0.35)⟧
 
 [notes below]
 ```
 
-Old format files are still partially supported for reading, but new excerpts use the new format.
+The page number (P42) is derived from the location metadata and rendered via overlay - it's not stored in the file. This ensures the page marker always matches the actual location.
 
 ## License
 

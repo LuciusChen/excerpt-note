@@ -1,4 +1,4 @@
-;;; passages.el --- Seamless inline excerpts -*- lexical-binding: t; -*-
+;;; passages.el --- Seamless inline passages -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
 ;; Author: Your Name
@@ -10,9 +10,9 @@
 
 ;; Passages provides a lightweight note-taking system for PDFs and EPUBs.
 ;; Features:
-;; - Seamless inline excerpts with precise anchors
+;; - Seamless inline passages with precise anchors
 ;; - Preserves original text formatting from PDFs
-;; - Compact format: ● Pxx [content]
+;; - Compact format: ● [content] ⟦file|location⟧ (Pxx rendered via overlay)
 ;; - Optimized single-overlay rendering system
 ;; - Robust file path resolution with intelligent search
 ;; - JIT-based incremental rendering with forced synchronization
@@ -899,26 +899,27 @@ For PDFs, uses position-based extraction if enabled."
 
 (defun passages--find-excerpts-in-region (start end)
   "Find excerpts in region from START to END.
-Format: ● Pxx [content - may span multiple lines] ⟦file|location⟧
-Content between marker and ⟦...⟧ is the excerpt body."
+Format: ● [content - may span multiple lines] ⟦file|location⟧
+Page number is derived from location in metadata."
   (let (excerpts)
     (save-excursion
       (goto-char start)
-      ;; Find each ● Pxx marker, then locate its ⟦...⟧ ending
-      (while (re-search-forward "^[ \t]*\\(● P\\([0-9]+\\) \\)" end t)
+      ;; Find each ● marker, then locate its ⟦...⟧ ending
+      (while (re-search-forward "^[ \t]*\\(● \\)" end t)
         (let* ((marker-start (match-beginning 1))
                (marker-end (match-end 1))
-               (page (string-to-number (match-string 2)))
                (body-start (point))
                ;; Limit search: don't cross into next excerpt
                (search-limit (save-excursion
-                               (if (re-search-forward "^[ \t]*● P[0-9]+ " end t)
+                               (if (re-search-forward "^[ \t]*● " end t)
                                    (line-beginning-position)
                                  end))))
           ;; Find the closing ⟦file|location⟧ within limit
           (when (re-search-forward " ?⟦\\([^|]+\\)|\\([^⟧]+\\)⟧" search-limit t)
             (let* ((file (match-string 1))
                    (location-str (match-string 2))
+                   (location (passages--parse-location-string location-str))
+                   (page (passages--get-location-page location))
                    (meta-start (match-beginning 0))
                    (meta-end (match-end 0))
                    ;; Body ends where metadata starts (minus optional space)
@@ -945,27 +946,18 @@ Content between marker and ⟦...⟧ is the excerpt body."
 
 (defun passages--find-excerpts-for-page (page file)
   "Find all excerpts for PAGE in FILE in current buffer.
-Supports multi-line excerpts."
-  (let ((positions '()))
-    (save-excursion
-      (goto-char (point-min))
-      ;; Find ● Pxx marker, then locate its ⟦file|...⟧
-      (while (re-search-forward (format "^[ \t]*● P%d " page) nil t)
-        (let* ((marker-pos (line-beginning-position))
-               ;; Don't search past next excerpt marker
-               (search-limit (save-excursion
-                               (if (re-search-forward "^[ \t]*● P[0-9]+ " nil t)
-                                   (line-beginning-position)
-                                 (point-max)))))
-          ;; Find the closing ⟦file|location⟧ within limit
-          (when (re-search-forward "⟦\\([^|]+\\)|[^⟧]+⟧" search-limit t)
-            (let ((excerpt-file (match-string 1)))
-              (when (or (null file)
-                        (null excerpt-file)
-                        (string-match-p (regexp-quote (file-name-nondirectory file))
-                                        excerpt-file))
-                (push marker-pos positions)))))))
-    (nreverse positions)))
+Page number is derived from metadata."
+  (let ((all-excerpts (passages--find-all-excerpts)))
+    (mapcar (lambda (exc) (plist-get exc :marker-start))
+            (seq-filter
+             (lambda (exc)
+               (and (= (plist-get exc :page) page)
+                    (or (null file)
+                        (null (plist-get exc :file))
+                        (string-match-p
+                         (regexp-quote (file-name-nondirectory file))
+                         (plist-get exc :file)))))
+             all-excerpts))))
 
 ;;; Optimized overlay system with org separator
 
@@ -998,8 +990,8 @@ Supports multi-line excerpts."
 
 (defun passages--add-overlay-for-excerpt (excerpt)
   "Add overlay for a single EXCERPT.
-Format: ● Pxx [content - may span multiple lines] ⟦file|location⟧
-Content between marker and ⟦...⟧ is styled gray, metadata is hidden."
+Format in file: ● [content] ⟦file|location⟧
+Displayed as: ● Pxx [content] (with Pxx rendered via overlay)."
   (let* ((marker-start (plist-get excerpt :marker-start))
          (marker-end (plist-get excerpt :marker-end))
          (body-start (plist-get excerpt :body-start))
@@ -1007,11 +999,14 @@ Content between marker and ⟦...⟧ is styled gray, metadata is hidden."
          (meta-start (plist-get excerpt :meta-start))
          (meta-end (plist-get excerpt :meta-end))
          (page (plist-get excerpt :page))
-         (file (plist-get excerpt :file)))
+         (file (plist-get excerpt :file))
+         (page-str (propertize (format "P%d " page)
+                               'face 'passages-marker-face)))
 
-    ;; Style the marker part (● Pxx)
+    ;; Style the marker part (● ) and append Pxx via after-string
     (let ((marker-ov (make-overlay marker-start marker-end)))
       (overlay-put marker-ov 'face 'passages-marker-face)
+      (overlay-put marker-ov 'after-string page-str)
       (overlay-put marker-ov 'mouse-face 'highlight)
       (overlay-put marker-ov 'help-echo "Click or C-c e j to jump to source")
       (overlay-put marker-ov 'keymap
@@ -1326,9 +1321,20 @@ Returns (PAGE . PREVIEW) if duplicate found, nil otherwise."
         (save-excursion
           (goto-char (point-min))
           (when-let* ((_ (search-forward anchor nil t))
-                      (_ (re-search-backward "^[ \t]*● P\\([0-9]+\\)" nil t))
-                      (page (string-to-number (match-string 1)))
-                      (preview-start (save-excursion (forward-line 1) (point)))
+                      (_ (re-search-backward "^[ \t]*● " nil t))
+                      ;; Find metadata to get page number
+                      (search-limit (save-excursion
+                                      (if (re-search-forward "^[ \t]*● " nil t)
+                                          (line-beginning-position)
+                                        (point-max))))
+                      (_ (re-search-forward "⟦[^|]+|\\([^⟧]+\\)⟧" search-limit t))
+                      (location-str (match-string 1))
+                      (location (passages--parse-location-string location-str))
+                      (page (passages--get-location-page location))
+                      (preview-start (save-excursion
+                                       (re-search-backward "^[ \t]*● " nil t)
+                                       (forward-line 1)
+                                       (point)))
                       (preview-end (min (+ preview-start 80)
                                         (save-excursion
                                           (goto-char preview-start)
@@ -1342,9 +1348,10 @@ Returns (PAGE . PREVIEW) if duplicate found, nil otherwise."
 
 (defun passages--do-insert (text loc-info)
   "Internal function to insert excerpt with TEXT and LOC-INFO.
-Structure:
-  ● Pxx [excerpt content] ⟦file|location⟧
+Structure in file:
+  ● [excerpt content] ⟦file|location⟧
   [user notes below]
+The Pxx is rendered via overlay from location metadata.
 The ⟦...⟧ metadata is hidden by overlay but persists in the file."
   (let* ((location (plist-get loc-info :location))
          (file (plist-get loc-info :file))
@@ -1378,9 +1385,8 @@ The ⟦...⟧ metadata is hidden by overlay but persists in the file."
           (insert "\n")
         (insert "\n\n")))
 
-    ;; 1. Marker: ● Pxx
-    (let ((marker-start (point)))
-      (insert (format "● P%d " page)))
+    ;; 1. Marker: ● (Pxx will be rendered via overlay)
+    (insert "● ")
 
     ;; 2. Excerpt content
     (when text
@@ -1449,7 +1455,7 @@ PAGE is the page number used in the label."
     (let* ((excerpt-start (point))
            (excerpt-end (save-excursion
                           (if (re-search-forward
-                               "^[ \t]*\\(-----+\\|● P\\)" nil t)
+                               "^[ \t]*\\(-----+\\|● \\)" nil t)
                               (line-beginning-position)
                             (point-max))))
            (preview (truncate-string-to-width
@@ -1541,7 +1547,7 @@ PAGE is the page number used in the label."
     (goto-char (point-min))
     (if (search-forward search-text nil t)
         (progn
-          (re-search-backward "^[ \t]*● P" nil t)
+          (re-search-backward "^[ \t]*● " nil t)
           (passages--ensure-overlays-at-point)
           (recenter)
           (message "✓ Found passage containing selected text"))
@@ -1550,51 +1556,52 @@ PAGE is the page number used in the label."
 ;;; Jump to source
 
 (defun passages--find-marker-for-point ()
-  "Find the ● P marker position for the excerpt unit containing point.
+  "Find the ● marker position for the excerpt unit containing point.
 Returns the position of the marker line, or nil if not found."
   (save-excursion
     (let ((orig (point)))
       (beginning-of-line)
       (cond
        ;; Already on marker line
-       ((looking-at "^[ \t]*● P")
+       ((looking-at "^[ \t]*● ")
         (point))
-       ;; Search backward for ● P or -----
-       ((re-search-backward "^[ \t]*\\(● P\\|-----+[ \t]*$\\)" nil t)
+       ;; Search backward for ● or -----
+       ((re-search-backward "^[ \t]*\\(● \\|-----+[ \t]*$\\)" nil t)
         (beginning-of-line)
-        (if (looking-at "^[ \t]*● P")
+        (if (looking-at "^[ \t]*● ")
             (point)
           ;; Hit separator - cursor is in notes area, search forward
           (goto-char orig)
-          (when (re-search-forward "^[ \t]*● P" nil t)
+          (when (re-search-forward "^[ \t]*● " nil t)
             (beginning-of-line)
             (point))))
        ;; Nothing found backward, try forward (at beginning of buffer)
        (t
         (goto-char orig)
-        (when (re-search-forward "^[ \t]*● P" nil t)
+        (when (re-search-forward "^[ \t]*● " nil t)
           (beginning-of-line)
           (point)))))))
 
 (defun passages--parse-marker-line-at-point ()
   "Parse excerpt at or near point.
-Format: ● Pxx [content - may span lines] ⟦file|location⟧"
+Format: ● [content] ⟦file|location⟧ (page derived from location)."
   (save-excursion
     (when-let* ((marker-pos (passages--find-marker-for-point)))
       (goto-char marker-pos)
-      ;; Match the marker and get page number
-      (when (looking-at "^[ \t]*● P\\([0-9]+\\) ")
-        (let* ((page (string-to-number (match-string 1)))
-               ;; Don't search past next excerpt marker
+      ;; Match the marker
+      (when (looking-at "^[ \t]*● ")
+        (let* (;; Don't search past next excerpt marker
                (search-limit (save-excursion
                                (forward-line 1)
-                               (if (re-search-forward "^[ \t]*● P[0-9]+ " nil t)
+                               (if (re-search-forward "^[ \t]*● " nil t)
                                    (line-beginning-position)
                                  (point-max)))))
           ;; Search forward for ⟦file|location⟧ within limit
           (when (re-search-forward "⟦\\([^|]+\\)|\\([^⟧]+\\)⟧" search-limit t)
             (let* ((file (match-string 1))
                    (location-str (match-string 2))
+                   (location (passages--parse-location-string location-str))
+                   (page (passages--get-location-page location))
                    (type (if (and file (string-match-p "\\.epub$" file)) 'epub 'pdf)))
               (list :page page
                     :file file
@@ -1645,16 +1652,16 @@ Returns (FILE . FOUND-POS) or nil."
 (defun passages--extract-anchor-text-at-point ()
   "Extract the first 30 characters of the excerpt body at point.
 Used as anchor text for EPUB secondary location verification.
-Content may span multiple lines, from ● Pxx to ⟦file|location⟧."
+Content may span multiple lines, from ● to ⟦file|location⟧."
   (save-excursion
     (when-let* ((marker-pos (passages--find-marker-for-point)))
       (goto-char marker-pos)
-      (when (looking-at "^[ \t]*● P[0-9]+ ")
+      (when (looking-at "^[ \t]*● ")
         (goto-char (match-end 0))
         (let* ((body-start (point))
                ;; Don't search past next excerpt marker
                (search-limit (save-excursion
-                               (if (re-search-forward "^[ \t]*● P[0-9]+ " nil t)
+                               (if (re-search-forward "^[ \t]*● " nil t)
                                    (line-beginning-position)
                                  (point-max)))))
           (when (re-search-forward " ?⟦[^⟧]+⟧" search-limit t)
@@ -1714,27 +1721,27 @@ Returns the parsed value, or LOCATION-STR unchanged on failure."
 
 (defun passages--excerpt-region-at-point ()
   "Return (BEG END MARKER-POS) of the full excerpt unit at point, or nil.
-An excerpt unit is: ● Pxx [content] + [user notes below]."
+An excerpt unit is: ● [content] + [user notes below]."
   (save-excursion
     (let ((orig (point))
           marker-pos)
-      ;; Step 1: Find the ● P marker that owns point.
+      ;; Step 1: Find the ● marker that owns point.
       ;; Search backward for marker or separator.
       (beginning-of-line)
       (cond
-       ((looking-at "^[ \t]*● P")
+       ((looking-at "^[ \t]*● ")
         (setq marker-pos (point)))
-       ((re-search-backward "^[ \t]*\\(● P\\|-----+\\)" nil t)
+       ((re-search-backward "^[ \t]*\\(● \\|-----+\\)" nil t)
         (beginning-of-line)
-        (if (looking-at "^[ \t]*● P")
+        (if (looking-at "^[ \t]*● ")
             (setq marker-pos (point))
           (goto-char orig)
-          (when (re-search-forward "^[ \t]*● P" nil t)
+          (when (re-search-forward "^[ \t]*● " nil t)
             (beginning-of-line)
             (setq marker-pos (point)))))
        (t
         (goto-char orig)
-        (when (re-search-forward "^[ \t]*● P" nil t)
+        (when (re-search-forward "^[ \t]*● " nil t)
           (beginning-of-line)
           (setq marker-pos (point)))))
 
